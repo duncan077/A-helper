@@ -351,6 +351,11 @@
             <CheckBox IsChecked="{Binding MinimiseToTray, Mode=TwoWay}"
                       Content="Close to tray instead of exiting"
                       Margin="0,10,0,0" />
+
+            <CheckBox IsChecked="{Binding RunAtStartup, Mode=TwoWay}"
+                      Content="Start with Windows" />
+            <TextBlock Classes="label" Margin="0,2,0,0" TextWrapping="Wrap"
+                       Text="Registers a scheduled task with highest privileges, so it starts elevated without a UAC prompt and opens straight to the tray." />
           </StackPanel>
         </Border>
 

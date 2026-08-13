@@ -39,7 +39,15 @@ public partial class App : Application
             _viewModel = new MainViewModel();
             _window = new MainWindow(_viewModel);
             desktop.MainWindow = _window;
-            _window.Show();
+
+            // The scheduled startup task passes --minimised, so a boot launch
+            // goes straight to the tray instead of stealing focus.
+            var startMinimised = desktop.Args?.Contains(StartupManager.MinimisedArgument) ?? false;
+
+            if (startMinimised)
+                Diagnostics.Write("started minimised (startup task)");
+            else
+                _window.Show();
 
             SetUpTray(desktop);
 

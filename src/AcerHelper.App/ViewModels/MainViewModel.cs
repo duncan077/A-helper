@@ -82,6 +82,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         LoadRefreshRates();
         InitialiseTuning();
 
+        // Read the real state rather than assuming; assign the field directly so
+        // this does not immediately re-create the task it just observed.
+        _runAtStartup = StartupManager.IsEnabled();
+
         Diagnostics.Write("---- AcerHelper starting ----");
         _ = InitialiseAsync();
     }
@@ -433,6 +437,40 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             OnPropertyChanged();
             if (AutoSwitchEnabled && _lastPowerSource == PowerSource.Battery)
                 _ = ApplyProfileForPowerAsync(PowerSource.Battery, "battery profile changed");
+        }
+    }
+
+    private bool _runAtStartup;
+
+    /// <summary>
+    /// Whether the scheduled startup task exists.
+    /// </summary>
+    /// <remarks>
+    /// The task itself is the source of truth rather than a line in the config
+    /// file: the user can delete it in Task Scheduler, and a stored flag would
+    /// then disagree with reality.
+    /// </remarks>
+    public bool RunAtStartup
+    {
+        get => _runAtStartup;
+        set
+        {
+            if (!Set(ref _runAtStartup, value)) return;
+
+            var error = value ? StartupManager.Enable() : StartupManager.Disable();
+
+            if (error is null)
+            {
+                Status = value ? "Will start with Windows" : "Startup entry removed";
+            }
+            else
+            {
+                Status = $"Startup change failed - {error}";
+
+                // Reflect what actually happened, not what was asked for.
+                _runAtStartup = StartupManager.IsEnabled();
+                OnPropertyChanged();
+            }
         }
     }
 
