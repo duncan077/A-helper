@@ -141,27 +141,39 @@ public static partial class PawnIoLocator
     /// </summary>
     public static IEnumerable<string> ModulePaths(string moduleName)
     {
-        yield return Path.Combine(AppContext.BaseDirectory, moduleName);
+        // The discovered install directory usually also appears in the
+        // well-known roots below, so deduplicate rather than listing it twice.
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        var install = InstallDirectory;
-        if (install is not null)
+        foreach (var path in Enumerate())
+            if (seen.Add(path))
+                yield return path;
+
+        IEnumerable<string> Enumerate()
         {
-            yield return Path.Combine(install, moduleName);
-            yield return Path.Combine(install, "modules", moduleName);
-            yield return Path.Combine(install, "Modules", moduleName);
+            yield return Path.Combine(AppContext.BaseDirectory, moduleName);
+
+            foreach (var dir in Directories())
+            {
+                yield return Path.Combine(dir, moduleName);
+                yield return Path.Combine(dir, "modules", moduleName);
+                yield return Path.Combine(dir, "Modules", moduleName);
+            }
         }
 
-        foreach (var root in new[]
-                 {
-                     Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
-                     Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
-                     Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-                 })
+        IEnumerable<string> Directories()
         {
-            if (string.IsNullOrEmpty(root)) continue;
-            yield return Path.Combine(root, "PawnIO", moduleName);
-            yield return Path.Combine(root, "PawnIO", "modules", moduleName);
-            yield return Path.Combine(root, "PawnIO", "Modules", moduleName);
+            if (InstallDirectory is { } install) yield return install;
+
+            foreach (var root in new[]
+                     {
+                         Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+                         Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
+                         Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+                     })
+            {
+                if (!string.IsNullOrEmpty(root)) yield return Path.Combine(root, "PawnIO");
+            }
         }
     }
 

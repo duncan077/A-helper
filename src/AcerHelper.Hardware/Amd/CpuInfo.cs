@@ -140,17 +140,13 @@ public static class CpuInfo
     }
 
     /// <summary>
-    /// Whether the PawnIO driver is present. SMU access needs it; without it no
-    /// undervolt can be applied regardless of what the CPU supports.
+    /// Whether PawnIO is present. SMU access needs it; without it no undervolt
+    /// can be applied regardless of what the CPU supports.
     /// </summary>
-    public static bool IsPawnIoInstalled()
-    {
-        try
-        {
-            var system32 = Environment.GetFolderPath(Environment.SpecialFolder.System);
-            return File.Exists(Path.Combine(system32, "drivers", "PawnIO.sys"))
-                || File.Exists(Path.Combine(system32, "PawnIOLib.dll"));
-        }
-        catch { return false; }
-    }
+    /// <remarks>
+    /// Delegates to <see cref="PawnIoLocator"/>. An earlier version looked only
+    /// in System32, which is not where PawnIO installs, so it reported false on
+    /// machines that had it - directly contradicting the locator's own result.
+    /// </remarks>
+    public static bool IsPawnIoInstalled() => PawnIoLocator.InstallDirectory is not null;
 }

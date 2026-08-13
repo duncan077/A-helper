@@ -186,6 +186,11 @@ Findings that contradict or extend `acer-wmi.c`:
 
 - **Function `0x07` is never emitted.** Nothing on ANV15-41 produces the
   documented gaming/Turbo key event, so anything bound to it will never fire.
+  The Nitro key is a dedicated key, not an Fn combination, and sends something
+  else. Because that differs per model, the profile-cycle binding is **not**
+  hard-coded: `AcerHelper.Probe.exe --learn-nitro` captures the press and prints
+  the `NitroKeyFunction` / `NitroKeyNumber` lines for `acerhelper.conf`.
+  `NitroKeyNumber=0xFF` matches any key for that function.
 - **Function `0x02`** is undocumented. Observed with `key_num = 1`.
 - **Function `0x09`** is undocumented and fires immediately after `0x08`
   (AC adapter) with the same key number — `0` unplugged, `1` plugged — so it
@@ -271,9 +276,18 @@ driver that runs sandboxed bytecode modules in ring 0. Mailbox addresses and
 command IDs follow G-Helper's `app/Pawn/RyzenSmu.cs`, which credits RyzenAdj and
 UXTU.
 
-**Requires PawnIO installed** — <https://pawnio.eu>. The `RyzenSMU.bin` module is
-LGPL-2.1 and ships with PawnIO, so it is located on disk rather than
-redistributed here. Search paths are printed by `--cpu`.
+**Verified working** on a Ryzen 5 7535HS (family `0x19`, model `0x44` →
+Rembrandt): the validation probe passes and reports SMU version `0x04454200`.
+
+**Requires PawnIO installed** — <https://pawnio.eu>. It installs to
+`C:\Program Files\PawnIO`, which is *not* on any default DLL search path, so
+`PawnIoLocator` finds it via the registry and installs a `DllImportResolver`.
+
+**`RyzenSMU.bin` is a separate download** from
+[PawnIO_Modules releases](https://github.com/namazso/PawnIO_Modules/releases) —
+the PawnIO installer does not appear to ship it. It is LGPL-2.1 and signed, so
+it is located on disk rather than redistributed here; putting it beside the
+executable works. `--cpu` prints every path searched.
 
 Mailboxes and commands, by family:
 

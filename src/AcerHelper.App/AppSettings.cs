@@ -22,6 +22,19 @@ public sealed class AppSettings
     public ThermalProfile BatteryProfile { get; set; } = ThermalProfile.Eco;
     public bool MinimiseToTray { get; set; } = true;
 
+    /// <summary>
+    /// Which APGeEvent triggers profile cycling.
+    ///
+    /// Defaults to the documented gaming/Turbo event (function 0x07), but
+    /// ANV15-41 never emits that - its Nitro key sends something else. Rather
+    /// than hard-code one model's value, the binding is learned:
+    /// <c>AcerHelper.Probe.exe --learn-nitro</c> prints the two lines to paste.
+    /// </summary>
+    public byte NitroKeyFunction { get; set; } = 0x07;
+
+    /// <summary>Key number to match, or 0xFF to match any key for the function.</summary>
+    public byte NitroKeyNumber { get; set; } = 0xFF;
+
     public static AppSettings Load()
     {
         var settings = new AppSettings();
@@ -51,6 +64,10 @@ public sealed class AppSettings
                         settings.AcProfile = ac; break;
                     case nameof(BatteryProfile) when Enum.TryParse<ThermalProfile>(value, out var bat):
                         settings.BatteryProfile = bat; break;
+                    case nameof(NitroKeyFunction) when TryParseByte(value, out var fn):
+                        settings.NitroKeyFunction = fn; break;
+                    case nameof(NitroKeyNumber) when TryParseByte(value, out var kn):
+                        settings.NitroKeyNumber = kn; break;
                 }
             }
         }
@@ -60,6 +77,17 @@ public sealed class AppSettings
         }
 
         return settings;
+    }
+
+    /// <summary>Accepts both decimal and 0x-prefixed hex, since these are event IDs.</summary>
+    private static bool TryParseByte(string value, out byte result)
+    {
+        value = value.Trim();
+
+        if (value.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+            return byte.TryParse(value[2..], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out result);
+
+        return byte.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out result);
     }
 
     public void Save()
@@ -73,6 +101,12 @@ public sealed class AppSettings
                 string.Create(CultureInfo.InvariantCulture, $"{nameof(AcProfile)}={AcProfile}"),
                 string.Create(CultureInfo.InvariantCulture, $"{nameof(BatteryProfile)}={BatteryProfile}"),
                 string.Create(CultureInfo.InvariantCulture, $"{nameof(MinimiseToTray)}={MinimiseToTray}"),
+                "",
+                "# APGeEvent that cycles thermal profiles. Learn it with:",
+                "#   AcerHelper.Probe.exe --learn-nitro",
+                "# NitroKeyNumber=0xFF matches any key for that function.",
+                string.Create(CultureInfo.InvariantCulture, $"{nameof(NitroKeyFunction)}=0x{NitroKeyFunction:X2}"),
+                string.Create(CultureInfo.InvariantCulture, $"{nameof(NitroKeyNumber)}=0x{NitroKeyNumber:X2}"),
             };
 
             File.WriteAllLines(FilePath, lines);

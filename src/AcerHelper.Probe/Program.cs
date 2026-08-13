@@ -281,6 +281,12 @@ using (wmi)
         WatchEvents();
     }
 
+    if (args.Contains("--learn-nitro"))
+    {
+        Section("LEARN THE NITRO KEY");
+        LearnNitroKey();
+    }
+
     if (args.Contains("--watch"))
     {
         Section("LIVE DIFFERENTIAL WATCH (read-only)");
@@ -502,6 +508,74 @@ static void WatchEvents()
 
     Console.WriteLine();
     Console.WriteLine($"Stopped. {count} event(s) captured. Nothing was modified.");
+}
+
+/// <summary>
+/// Captures the event a single key press produces and prints the config lines
+/// that bind profile cycling to it.
+///
+/// Needed because ANV15-41 never emits the documented gaming/Turbo event
+/// (function 0x07), so the binding cannot be hard-coded from the kernel's
+/// keymap - it differs per model.
+/// </summary>
+static void LearnNitroKey()
+{
+    Console.WriteLine("Press the Nitro key ONCE, and nothing else.");
+    Console.WriteLine("Waiting up to 30 seconds. Ctrl+C to abort.");
+    Console.WriteLine();
+
+    using var watcher = AcerEventWatcher.Start();
+    var captured = new List<AcerHotkeyEvent>();
+
+    watcher.EventReceived += (_, e) =>
+    {
+        lock (captured) captured.Add(e);
+        Console.WriteLine($"  captured function=0x{(byte)e.Function:X2} key=0x{e.KeyNumber:X2} "
+                          + $"{e.KeyName} state=0x{e.DeviceState:X4}");
+    };
+
+    var deadline = DateTime.Now.AddSeconds(30);
+    while (DateTime.Now < deadline)
+    {
+        Thread.Sleep(200);
+        lock (captured) { if (captured.Count > 0 && DateTime.Now > deadline.AddSeconds(-27)) break; }
+    }
+
+    Thread.Sleep(500);   // let a paired follow-up event arrive
+
+    List<AcerHotkeyEvent> events;
+    lock (captured) events = [.. captured];
+
+    Console.WriteLine();
+    if (events.Count == 0)
+    {
+        Console.WriteLine("Nothing captured. Either the key was not pressed, or Acer's");
+        Console.WriteLine("driver consumes it before it reaches WMI - in which case it");
+        Console.WriteLine("cannot be used as a trigger at all.");
+        return;
+    }
+
+    // A single press can emit a paired event; the first is the trigger.
+    var chosen = events[0];
+
+    Console.WriteLine($"{events.Count} event(s) captured. Using the first:");
+    Console.WriteLine();
+    Console.WriteLine($"  function 0x{(byte)chosen.Function:X2}  key 0x{chosen.KeyNumber:X2}");
+    Console.WriteLine();
+    Console.WriteLine("Add these lines to acerhelper.conf beside AcerHelper.App.exe:");
+    Console.WriteLine();
+    Console.WriteLine($"    NitroKeyFunction=0x{(byte)chosen.Function:X2}");
+    Console.WriteLine($"    NitroKeyNumber=0x{chosen.KeyNumber:X2}");
+    Console.WriteLine();
+    Console.WriteLine("Use NitroKeyNumber=0xFF to match any key for that function.");
+
+    if (events.Count > 1)
+    {
+        Console.WriteLine();
+        Console.WriteLine("Other events in the same window (ignore unless the first is wrong):");
+        foreach (var e in events.Skip(1))
+            Console.WriteLine($"    function 0x{(byte)e.Function:X2}  key 0x{e.KeyNumber:X2}  {e.KeyName}");
+    }
 }
 
 /// <summary>

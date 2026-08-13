@@ -637,8 +637,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 // documented, so this is the only record of the real layout.
                 Diagnostics.Write($"APGeEvent function={e.Function} key={e.KeyNumber}  {e.DescribeRaw()}");
 
-                if (e.Function == AcerEventFunction.GamingTurboKey)
-                    _ = CycleProfileAsync();
+                if (MatchesNitroKey(e)) _ = CycleProfileAsync();
             };
 
             watcher.Failed += (_, ex) =>
@@ -657,6 +656,17 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             Diagnostics.WriteException("event watcher start", ex);
         }
     }
+
+    /// <summary>
+    /// Whether an event is the configured profile-cycle key.
+    ///
+    /// Not hard-coded to the documented function 0x07: ANV15-41 never emits it,
+    /// and the event its Nitro key does send differs by model. The binding lives
+    /// in acerhelper.conf and is discovered with the probe's --learn-nitro.
+    /// </summary>
+    private bool MatchesNitroKey(AcerHotkeyEvent e)
+        => (byte)e.Function == _settings.NitroKeyFunction
+           && (_settings.NitroKeyNumber == 0xFF || e.KeyNumber == _settings.NitroKeyNumber);
 
     /// <summary>Advances to the next supported profile. Bound to the Nitro key.</summary>
     private async Task CycleProfileAsync()
