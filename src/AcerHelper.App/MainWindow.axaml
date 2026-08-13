@@ -148,6 +148,64 @@
           </StackPanel>
         </Border>
 
+        <!-- Advanced: GPU / CPU tuning -->
+        <Border Classes="card">
+          <StackPanel>
+            <TextBlock Classes="heading" Text="ADVANCED — GPU / CPU TUNING" />
+
+            <!-- GPU -->
+            <TextBlock FontSize="12" FontWeight="SemiBold" Text="{Binding GpuName}" />
+            <TextBlock Classes="label" Text="{Binding GpuOffsetRange}" Margin="0,0,0,6" />
+
+            <StackPanel IsEnabled="{Binding GpuAvailable}">
+              <TextBlock Classes="label">
+                <Run Text="Core offset" />
+                <Run Text="{Binding GpuCoreOffset, StringFormat={}{0:+#;-#;0} MHz}" />
+              </TextBlock>
+              <Slider Minimum="-500" Maximum="500" TickFrequency="25"
+                      Value="{Binding GpuCoreOffset, Mode=TwoWay}" />
+
+              <TextBlock Classes="label">
+                <Run Text="Memory offset" />
+                <Run Text="{Binding GpuMemoryOffset, StringFormat={}{0:+#;-#;0} MHz}" />
+              </TextBlock>
+              <Slider Minimum="-500" Maximum="1000" TickFrequency="50"
+                      Value="{Binding GpuMemoryOffset, Mode=TwoWay}" />
+
+              <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                <Button Content="Apply" Command="{Binding ApplyGpuOffsetsCommand}"
+                        Padding="14,6" Margin="0,0,6,0" />
+                <Button Content="Reset" Command="{Binding ResetGpuOffsetsCommand}" Padding="14,6" />
+              </StackPanel>
+            </StackPanel>
+
+            <TextBlock Classes="label" Margin="0,6,0,14" TextWrapping="Wrap"
+                       Text="Offsets apply to the highest performance state and are not persisted by the driver — a reboot clears them." />
+
+            <!-- CPU -->
+            <TextBlock FontSize="12" FontWeight="SemiBold" Text="CPU Curve Optimizer" />
+            <TextBlock Classes="label" Text="{Binding SmuStatusText}" Margin="0,0,0,6" />
+
+            <StackPanel IsEnabled="{Binding SmuAvailable}">
+              <TextBlock Classes="label">
+                <Run Text="All-core offset" />
+                <Run Text="{Binding CurveOffset, StringFormat={}{0:F0}}" />
+              </TextBlock>
+              <Slider Minimum="-50" Maximum="10" TickFrequency="5"
+                      Value="{Binding CurveOffset, Mode=TwoWay}" />
+
+              <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                <Button Content="Apply undervolt" Command="{Binding ApplyCurveCommand}"
+                        Padding="14,6" Margin="0,0,6,0" />
+                <Button Content="Reset" Command="{Binding ResetCurveCommand}" Padding="14,6" />
+              </StackPanel>
+            </StackPanel>
+
+            <TextBlock Classes="label" Margin="0,6,0,0" TextWrapping="Wrap"
+                       Text="Writes to the CPU's System Management Unit. The SMU accepting an offset does not mean it is stable — instability usually appears only under sustained load, so stress-test before relying on it. Settings clear at reboot." />
+          </StackPanel>
+        </Border>
+
         <!-- Display -->
         <Border Classes="card">
           <StackPanel>

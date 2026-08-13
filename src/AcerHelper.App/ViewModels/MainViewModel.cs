@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+﻿// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Every hardware call - including opening and disposing the channels - is
 // marshalled onto AcerHardwareDispatcher's dedicated MTA thread.
@@ -17,6 +17,8 @@ using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Windows.Input;
 using AcerHelper.Hardware;
+using AcerHelper.Hardware.Amd;
+using AcerHelper.Hardware.Nvidia;
 using Avalonia.Threading;
 
 namespace AcerHelper.App.ViewModels;
@@ -33,6 +35,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     // Owns its own thread and connection - see AcerEventWatcher.
     private AcerEventWatcher? _eventWatcher;
+
+    // Tuning back-ends. Both are optional and absent on most machines.
+    private NvApi? _nvApi;
+    private RyzenSmu? _smu;
 
     private readonly AppSettings _settings = AppSettings.Load();
 
@@ -55,7 +61,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         ToggleOverdriveCommand = new RelayCommand(_ => _ = ToggleOverdriveAsync(),
                                                   _ => OverdriveSupported);
 
+        ApplyGpuOffsetsCommand = new RelayCommand(_ => _ = ApplyGpuOffsetsAsync(), _ => GpuAvailable);
+        ResetGpuOffsetsCommand = new RelayCommand(_ => _ = ResetGpuOffsetsAsync(), _ => GpuAvailable);
+        ApplyCurveCommand = new RelayCommand(_ => _ = ApplyCurveAsync(), _ => SmuAvailable);
+        ResetCurveCommand = new RelayCommand(_ => _ = ResetCurveAsync(), _ => SmuAvailable);
+
         LoadRefreshRates();
+        InitialiseTuning();
 
         Diagnostics.Write("---- AcerHelper starting ----");
         _ = InitialiseAsync();
@@ -134,6 +146,45 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private string _designCapacity = "--";
     public string DesignCapacity { get => _designCapacity; private set => Set(ref _designCapacity, value); }
+
+    // ---------------------------------------------------- advanced: GPU/CPU
+
+    private bool _gpuAvailable;
+    public bool GpuAvailable
+    {
+        get => _gpuAvailable;
+        private set { if (Set(ref _gpuAvailable, value)) RaiseCanExecuteChanged(); }
+    }
+
+    private string _gpuName = "--";
+    public string GpuName { get => _gpuName; private set => Set(ref _gpuName, value); }
+
+    private string _gpuOffsetRange = "--";
+    public string GpuOffsetRange { get => _gpuOffsetRange; private set => Set(ref _gpuOffsetRange, value); }
+
+    private double _gpuCoreOffset;
+    public double GpuCoreOffset { get => _gpuCoreOffset; set => Set(ref _gpuCoreOffset, value); }
+
+    private double _gpuMemoryOffset;
+    public double GpuMemoryOffset { get => _gpuMemoryOffset; set => Set(ref _gpuMemoryOffset, value); }
+
+    private bool _smuAvailable;
+    public bool SmuAvailable
+    {
+        get => _smuAvailable;
+        private set { if (Set(ref _smuAvailable, value)) RaiseCanExecuteChanged(); }
+    }
+
+    private string _smuStatusText = "Not initialised";
+    public string SmuStatusText { get => _smuStatusText; private set => Set(ref _smuStatusText, value); }
+
+    private double _curveOffset;
+    public double CurveOffset { get => _curveOffset; set => Set(ref _curveOffset, value); }
+
+    public ICommand ApplyGpuOffsetsCommand { get; private set; } = null!;
+    public ICommand ResetGpuOffsetsCommand { get; private set; } = null!;
+    public ICommand ApplyCurveCommand { get; private set; } = null!;
+    public ICommand ResetCurveCommand { get; private set; } = null!;
 
     // -------------------------------------------------------------- display
 
@@ -372,11 +423,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                     };
 
                     var r = s.sensors;
-                    CpuTemp = r.CpuTemperatureC is { } ct ? $"{ct} °C" : "--";
+                    CpuTemp = r.CpuTemperatureC is { } ct ? $"{ct} Â°C" : "--";
                     CpuFan = r.CpuFanRpm is { } cf ? $"{cf} rpm" : "--";
                     GpuFan = r.GpuFanRpm is { } gf ? $"{gf} rpm" : "--";
-                    SystemTemp = r.ExternalTemperature2C is { } et ? $"{et} °C" : "--";
-                    GpuTemp = r.GpuLikelyAsleep ? "asleep" : $"{r.GpuTemperatureC} °C";
+                    SystemTemp = r.ExternalTemperature2C is { } et ? $"{et} Â°C" : "--";
+                    GpuTemp = r.GpuLikelyAsleep ? "asleep" : $"{r.GpuTemperatureC} Â°C";
 
                     CurrentProfile = s.profile;
                     FanModeText = s.cpuMode.ToString();
@@ -414,6 +465,160 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                     return;
                 }
             }
+        }
+    }
+
+    // --------------------------------------------------- advanced: GPU / CPU
+
+    /// <summary>
+    /// Opens the optional tuning back-ends. Both are absent on most machines, so
+    /// every failure here is expected and simply leaves the feature disabled.
+    /// </summary>
+    private void InitialiseTuning()
+    {
+        try
+        {
+            _nvApi = NvApi.TryOpen();
+            if (_nvApi is { GpuCount: > 0 })
+            {
+                GpuName = _nvApi.GetGpuName(0);
+
+                var offsets = _nvApi.GetClockOffsets(0);
+                var core = offsets.FirstOrDefault(o => o.Domain == NvClockDomain.Graphics);
+                var memory = offsets.FirstOrDefault(o => o.Domain == NvClockDomain.Memory);
+
+                // Only offer control the driver says is editable.
+                GpuAvailable = core is { IsEditable: true } || memory is { IsEditable: true };
+
+                _gpuCoreOffset = core?.CurrentMhz ?? 0;
+                _gpuMemoryOffset = memory?.CurrentMhz ?? 0;
+                OnPropertyChanged(nameof(GpuCoreOffset));
+                OnPropertyChanged(nameof(GpuMemoryOffset));
+
+                GpuOffsetRange = core is null
+                    ? "no editable clock domains"
+                    : $"core {core.MinMhz}..{core.MaxMhz} MHz"
+                      + (memory is null ? "" : $", memory {memory.MinMhz}..{memory.MaxMhz} MHz");
+
+                Diagnostics.Write($"nvapi: {GpuName}, editable={GpuAvailable}, {GpuOffsetRange}");
+            }
+            else
+            {
+                GpuName = "no NVIDIA GPU";
+            }
+        }
+        catch (Exception ex)
+        {
+            GpuAvailable = false;
+            Diagnostics.WriteException("nvapi init", ex);
+        }
+
+        try
+        {
+            _smu = RyzenSmu.TryOpen(out var pawnStatus);
+            if (_smu is { IsUsable: true })
+            {
+                SmuAvailable = true;
+                SmuStatusText = $"{_smu.Cpu.Codename} Â· SMU 0x{_smu.SmuVersion:X8} Â· validated";
+                Diagnostics.Write($"smu: {_smu.Cpu.Codename} family={_smu.Family} ver=0x{_smu.SmuVersion:X8}");
+            }
+            else
+            {
+                SmuAvailable = false;
+                SmuStatusText = pawnStatus switch
+                {
+                    PawnIoStatus.LibraryMissing => "PawnIO not installed",
+                    PawnIoStatus.ModuleNotFound => "RyzenSMU.bin not found",
+                    PawnIoStatus.DriverNotRunning => "PawnIO driver not running",
+                    PawnIoStatus.ModuleLoadFailed => "SMU did not answer the validation probe",
+                    _ => "unavailable",
+                };
+                Diagnostics.Write($"smu unavailable: {pawnStatus}");
+            }
+        }
+        catch (Exception ex)
+        {
+            SmuAvailable = false;
+            SmuStatusText = "unavailable";
+            Diagnostics.WriteException("smu init", ex);
+        }
+    }
+
+    private async Task ApplyGpuOffsetsAsync()
+    {
+        var core = (int)GpuCoreOffset;
+        var memory = (int)GpuMemoryOffset;
+
+        try
+        {
+            await Task.Run(() =>
+            {
+                _nvApi!.SetClockOffset(0, NvClockDomain.Graphics, core * 1000);
+                _nvApi.SetClockOffset(0, NvClockDomain.Memory, memory * 1000);
+            });
+
+            Status = $"GPU offsets applied: core {core:+#;-#;0} MHz, memory {memory:+#;-#;0} MHz";
+            Diagnostics.Write($"gpu offsets: core={core} mem={memory}");
+        }
+        catch (Exception ex)
+        {
+            Status = $"GPU offset failed - {Diagnostics.Describe(ex)}";
+            Diagnostics.WriteException("gpu offsets", ex);
+        }
+    }
+
+    private async Task ResetGpuOffsetsAsync()
+    {
+        try
+        {
+            await Task.Run(() =>
+            {
+                _nvApi!.ResetClockOffset(0, NvClockDomain.Graphics);
+                _nvApi.ResetClockOffset(0, NvClockDomain.Memory);
+            });
+
+            GpuCoreOffset = 0;
+            GpuMemoryOffset = 0;
+            Status = "GPU offsets cleared";
+        }
+        catch (Exception ex)
+        {
+            Status = $"GPU reset failed - {Diagnostics.Describe(ex)}";
+        }
+    }
+
+    private async Task ApplyCurveAsync()
+    {
+        var offset = (int)CurveOffset;
+
+        try
+        {
+            var result = await Task.Run(() => _smu!.SetCurveOptimizerAll(offset));
+
+            Status = result == SmuStatus.Ok
+                ? $"Curve Optimizer {offset} accepted - test under load before trusting it"
+                : $"SMU rejected the offset ({result})";
+
+            Diagnostics.Write($"curve optimizer {offset} -> {result}");
+        }
+        catch (Exception ex)
+        {
+            Status = $"Undervolt failed - {Diagnostics.Describe(ex)}";
+            Diagnostics.WriteException("curve optimizer", ex);
+        }
+    }
+
+    private async Task ResetCurveAsync()
+    {
+        try
+        {
+            await Task.Run(() => _smu!.ResetCurveOptimizer());
+            CurveOffset = 0;
+            Status = "Curve Optimizer cleared";
+        }
+        catch (Exception ex)
+        {
+            Status = $"Undervolt reset failed - {Diagnostics.Describe(ex)}";
         }
     }
 
@@ -707,6 +912,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         (ToggleCustomFanCommand as RelayCommand)?.RaiseCanExecuteChanged();
         (ToggleHealthModeCommand as RelayCommand)?.RaiseCanExecuteChanged();
         (ToggleOverdriveCommand as RelayCommand)?.RaiseCanExecuteChanged();
+        (ApplyGpuOffsetsCommand as RelayCommand)?.RaiseCanExecuteChanged();
+        (ResetGpuOffsetsCommand as RelayCommand)?.RaiseCanExecuteChanged();
+        (ApplyCurveCommand as RelayCommand)?.RaiseCanExecuteChanged();
+        (ResetCurveCommand as RelayCommand)?.RaiseCanExecuteChanged();
     }
 
     // ------------------------------------------------------------ plumbing
@@ -748,6 +957,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
         catch (Exception ex) { Diagnostics.WriteException("shutdown", ex); }
 
+        // Undervolts are volatile and clear at reboot, so they are deliberately
+        // NOT reset here - the user's setting should survive closing the app.
+        _smu?.Dispose();
+        _nvApi?.Dispose();
+
         _hw.Dispose();
         _cts.Dispose();
         Diagnostics.Write("---- AcerHelper stopped ----");
@@ -765,3 +979,4 @@ public sealed class RelayCommand(Action<object?> execute, Func<object?, bool>? c
 
     public void RaiseCanExecuteChanged() => CanExecuteChanged?.Invoke(this, EventArgs.Empty);
 }
+

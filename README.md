@@ -243,27 +243,59 @@ the pstate table. Getting that wrong returns
 `NVAPI_INCOMPATIBLE_STRUCT_VERSION` (-9). The code tries V2 then falls back to
 V1, since older drivers reject V2 outright rather than negotiating.
 
-### AMD undervolting — not implemented
+### AMD Curve Optimizer undervolting
 
 `Amd/CpuInfo.cs` identifies the CPU via `X86Base.CpuId` (an intrinsic: no
-driver, no elevation, AOT-safe) and maps family/model to an SMU codename. That
-establishes *whether* undervolting is possible, without touching ring 0.
+driver, no elevation, AOT-safe) and maps family/model to an SMU codename.
 
-Applying an undervolt is a different matter. G-Helper does it in
-`app/Pawn/RyzenSmu.cs` through **PawnIO**, a signed kernel driver, using
-`SetCoAll` / `SetCoGfx`. That requires:
+`Amd/RyzenSmu.cs` performs the undervolt through **PawnIO**, a signed kernel
+driver that runs sandboxed bytecode modules in ring 0. Mailbox addresses and
+command IDs follow G-Helper's `app/Pawn/RyzenSmu.cs`, which credits RyzenAdj and
+UXTU.
 
-- installing a third-party kernel driver
-- writing to SMU mailboxes, where a wrong address can hang the machine
-- accepting that Curve Optimizer instability often only appears under load
+**Requires PawnIO installed** — <https://pawnio.eu>. The `RyzenSMU.bin` module is
+LGPL-2.1 and ships with PawnIO, so it is located on disk rather than
+redistributed here. Search paths are printed by `--cpu`.
 
-Note the asymmetry with ASUS: G-Helper gets PPT/SPL/SPPT limits from ASUS's own
-ACPI interface and uses PawnIO only for undervolt and temperature limits. The
-ANV15-41 has **no** ACPI power-limit interface at all — `OC_1` is absent and
-`OC_2` returns `0xFF` — so on this machine *every* CPU tuning knob would have to
-go through the SMU. That makes it a larger dependency for a smaller payoff.
+Mailboxes and commands, by family:
 
-`AcerHelper.Probe.exe --cpu` reports the codename and whether PawnIO is present.
+| Family | MP1 cmd/rsp/arg | PSMU cmd/rsp/arg |
+|---|---|---|
+| Renoir | `3B10528` / `3B10564` / `3B10998` | `3B10A20` / `3B10A80` / `3B10A88` |
+| Mobile *(Cezanne, Rembrandt, Phoenix, HawkPoint)* | `3B10528` / `3B10578` / `3B10998` | `3B10A20` / `3B10A80` / `3B10A88` |
+| Raphael *(and Matisse/Vermeer)* | `3B10530` / `3B1057C` / `3B109C4` | `3B10524` / `3B10570` / `3B10A40` |
+
+| Operation | Renoir | Mobile | Raphael |
+|---|---|---|---|
+| Curve Optimizer, all cores | MP1 `0x55` | MP1 `0x4C` | PSMU `0x07` |
+| Curve Optimizer, iGPU | MP1 `0x64` | PSMU `0xB7` | — |
+| Temperature limit | MP1 `0x19` | MP1 `0x19` | MP1 `0x3F` |
+
+Offsets are 16-bit two's complement. PCI config access is serialised on the
+conventional `Global\Access_PCI` mutex, as the RyzenSMU module requires.
+
+**Safety.** The feature stays disabled unless a read-only probe succeeds first:
+the module must load, `ioctl_get_code_name` must resolve, and
+`ioctl_get_smu_version` must return non-zero. Families without a verified
+command table report `Unsupported` rather than guessing. Offsets are clamped to
+−50…+10, and the mailbox is checked for an unfinished prior transaction before
+any write.
+
+**The SMU accepting an offset does not mean it is stable.** Curve Optimizer
+instability usually appears only under sustained load. SMU settings are volatile,
+so a reboot — or the Reset button — clears them.
+
+Note the asymmetry with ASUS: G-Helper gets PPT/SPL/SPPT from ASUS's own ACPI
+interface and uses PawnIO only for undervolt and temperature limits. The
+ANV15-41 has **no** ACPI power-limit interface — `OC_1` absent, `OC_2` = `0xFF` —
+so on this machine every CPU knob goes through the SMU, with no fallback.
+
+```bash
+AcerHelper.Probe.exe --cpu          # identification and PawnIO discovery
+AcerHelper.Probe.exe --smu          # validation probe, read-only
+AcerHelper.Probe.exe --smu-co=-20   # apply an all-core offset
+AcerHelper.Probe.exe --smu-reset    # clear it
+```
 
 ---
 

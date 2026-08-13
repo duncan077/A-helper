@@ -37,6 +37,84 @@ if (args.Contains("--cpu"))
     Console.WriteLine();
     Console.WriteLine("Undervolting needs BOTH: a supported codename and the PawnIO driver.");
     Console.WriteLine("Nothing was written - this is identification only.");
+    Console.WriteLine();
+    Console.WriteLine($"PawnIOLib available       : {PawnIoModule.IsLibraryAvailable()}");
+    Console.WriteLine("Module search paths:");
+    foreach (var p in PawnIoModule.ModuleSearchPaths("RyzenSMU.bin"))
+        Console.WriteLine($"  {(File.Exists(p) ? "[FOUND]" : "[     ]")} {p}");
+    return 0;
+}
+
+// SMU probe. Read-only by default; --smu-co= applies an undervolt.
+if (args.Contains("--smu") || args.Any(a => a.StartsWith("--smu-co=", StringComparison.Ordinal))
+                           || args.Contains("--smu-reset"))
+{
+    if (!AcerGamingWmi.IsElevated)
+    {
+        Console.Error.WriteLine("SMU access must run elevated.");
+        return 1;
+    }
+
+    var smu = RyzenSmu.TryOpen(out var pawnStatus);
+    if (smu is null)
+    {
+        Console.WriteLine($"SMU unavailable: {pawnStatus}");
+        Console.WriteLine();
+        Console.WriteLine(pawnStatus switch
+        {
+            PawnIoStatus.LibraryMissing => "PawnIOLib not found. Install PawnIO from https://pawnio.eu",
+            PawnIoStatus.ModuleNotFound => "RyzenSMU.bin not found in any search path (see --cpu).",
+            PawnIoStatus.DriverNotRunning => "The PawnIO driver is not running.",
+            PawnIoStatus.ModuleLoadFailed => "Module loaded but the SMU did not answer the read-only probe.",
+            _ => "Unknown reason.",
+        });
+        return 2;
+    }
+
+    using (smu)
+    {
+        Console.WriteLine($"CPU          : {smu.Cpu.BrandString}");
+        Console.WriteLine($"Codename     : {smu.Cpu.Codename}");
+        Console.WriteLine($"SMU family   : {smu.Family}");
+        Console.WriteLine($"SMU version  : 0x{smu.SmuVersion:X8}");
+        Console.WriteLine($"Usable       : {smu.IsUsable}");
+        Console.WriteLine();
+        Console.WriteLine("Validation probe passed - the mailbox answered read-only calls.");
+
+        if (args.Contains("--smu-reset"))
+        {
+            smu.ResetCurveOptimizer();
+            Console.WriteLine("Curve Optimizer reset to 0.");
+            return 0;
+        }
+
+        var coArg = args.FirstOrDefault(a => a.StartsWith("--smu-co=", StringComparison.Ordinal));
+        if (coArg is null)
+        {
+            Console.WriteLine();
+            Console.WriteLine("Read-only. Use --smu-co=-20 to apply an all-core offset,");
+            Console.WriteLine("or --smu-reset to clear it. A reboot also clears it.");
+            return 0;
+        }
+
+        if (!int.TryParse(coArg["--smu-co=".Length..], out var offset))
+        {
+            Console.Error.WriteLine("Could not parse the offset.");
+            return 1;
+        }
+
+        Console.WriteLine();
+        Console.WriteLine($"Applying all-core Curve Optimizer offset {offset}...");
+        var result = smu.SetCurveOptimizerAll(offset);
+        Console.WriteLine($"  SMU status: {result}");
+        Console.WriteLine();
+        Console.WriteLine(result == SmuStatus.Ok
+            ? "Accepted. NOTE: acceptance is not stability - instability from an\n"
+              + "aggressive offset usually appears only under sustained load.\n"
+              + "Test with a stress run, and reboot or --smu-reset to revert."
+            : "Rejected. Nothing was applied.");
+    }
+
     return 0;
 }
 
