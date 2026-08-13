@@ -22,6 +22,11 @@ internal static partial class PawnIoNative
 {
     private const string Lib = "PawnIOLib";
 
+    // Declaring a static constructor makes this type non-beforefieldinit, so the
+    // runtime must run it before the first P/Invoke below. That is what puts the
+    // DLL resolver in place - PawnIOLib.dll is not on any default search path.
+    static PawnIoNative() => PawnIoLocator.Register();
+
     [LibraryImport(Lib)]
     internal static partial int pawnio_version(out uint version);
 
@@ -67,20 +72,13 @@ public sealed class PawnIoModule : IDisposable
 
     /// <summary>Where a module blob may live. PawnIO installs its own modules.</summary>
     public static IEnumerable<string> ModuleSearchPaths(string moduleName)
-    {
-        yield return Path.Combine(AppContext.BaseDirectory, moduleName);
+        => PawnIoLocator.ModulePaths(moduleName);
 
-        foreach (var root in new[]
-                 {
-                     Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
-                     Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
-                 })
-        {
-            if (string.IsNullOrEmpty(root)) continue;
-            yield return Path.Combine(root, "PawnIO", "modules", moduleName);
-            yield return Path.Combine(root, "PawnIO", moduleName);
-        }
-    }
+    /// <summary>Directory PawnIOLib.dll was found in, or null.</summary>
+    public static string? InstallDirectory => PawnIoLocator.InstallDirectory;
+
+    /// <summary>Every location examined while looking for PawnIOLib.dll.</summary>
+    public static IReadOnlyList<string> LibrarySearchPaths => PawnIoLocator.CheckedPaths;
 
     /// <summary>Whether PawnIOLib is present at all, without opening the driver.</summary>
     public static bool IsLibraryAvailable()

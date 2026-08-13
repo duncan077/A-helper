@@ -38,10 +38,71 @@ if (args.Contains("--cpu"))
     Console.WriteLine("Undervolting needs BOTH: a supported codename and the PawnIO driver.");
     Console.WriteLine("Nothing was written - this is identification only.");
     Console.WriteLine();
-    Console.WriteLine($"PawnIOLib available       : {PawnIoModule.IsLibraryAvailable()}");
-    Console.WriteLine("Module search paths:");
+    Console.WriteLine($"PawnIO install directory  : {PawnIoModule.InstallDirectory ?? "NOT FOUND"}");
+    Console.WriteLine($"PawnIOLib loadable        : {PawnIoModule.IsLibraryAvailable()}");
+    Console.WriteLine();
+    Console.WriteLine("Looked for PawnIOLib.dll in:");
+    foreach (var p in PawnIoModule.LibrarySearchPaths)
+        Console.WriteLine($"  {(File.Exists(p) ? "[FOUND]" : "[     ]")} {p}");
+    Console.WriteLine();
+    Console.WriteLine("Looked for RyzenSMU.bin in:");
     foreach (var p in PawnIoModule.ModuleSearchPaths("RyzenSMU.bin"))
         Console.WriteLine($"  {(File.Exists(p) ? "[FOUND]" : "[     ]")} {p}");
+
+    if (PawnIoModule.InstallDirectory is null)
+    {
+        Console.WriteLine();
+        Console.WriteLine("If PawnIO IS installed, run with --find-pawnio to search the disk.");
+    }
+    return 0;
+}
+
+// Last-resort locator: scan for PawnIO files when the usual paths miss.
+if (args.Contains("--find-pawnio"))
+{
+    Console.WriteLine("Searching common roots for PawnIOLib.dll and *.bin modules...");
+    Console.WriteLine();
+
+    var roots = new[]
+    {
+        Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+        Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
+        Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        Environment.GetFolderPath(Environment.SpecialFolder.System),
+    }.Where(r => !string.IsNullOrEmpty(r)).Distinct();
+
+    var hits = 0;
+    foreach (var root in roots)
+    {
+        Console.WriteLine($"  scanning {root} ...");
+        foreach (var pattern in new[] { "PawnIOLib.dll", "PawnIO.sys", "RyzenSMU.bin" })
+        {
+            IEnumerable<string> found;
+            try
+            {
+                // Bounded depth keeps this from walking an entire user profile.
+                found = Directory.EnumerateFiles(root, pattern, new EnumerationOptions
+                {
+                    RecurseSubdirectories = true,
+                    MaxRecursionDepth = 4,
+                    IgnoreInaccessible = true,
+                });
+            }
+            catch { continue; }
+
+            foreach (var f in found)
+            {
+                Console.WriteLine($"    FOUND {f}");
+                hits++;
+            }
+        }
+    }
+
+    Console.WriteLine();
+    Console.WriteLine(hits == 0
+        ? "Nothing found. PawnIO does not appear to be installed."
+        : $"{hits} file(s) found. Send this list and the locator will be taught these paths.");
     return 0;
 }
 
