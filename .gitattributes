@@ -1,0 +1,14 @@
+# Normalise line endings in the repository; check out native on each platform.
+* text=auto
+
+*.cs      text diff=csharp
+*.csproj  text
+*.axaml   text
+*.md      text
+*.ps1     text eol=crlf
+*.manifest text
+
+*.png binary
+*.ico binary
+*.dll binary
+*.exe binary

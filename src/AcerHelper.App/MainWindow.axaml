@@ -1,0 +1,174 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:AcerHelper.App.ViewModels"
+        xmlns:hw="using:AcerHelper.Hardware"
+        x:Class="AcerHelper.App.MainWindow"
+        x:DataType="vm:MainViewModel"
+        Title="AcerHelper"
+        Width="440" Height="640"
+        MinWidth="400" MinHeight="560"
+        WindowStartupLocation="CenterScreen">
+
+  <Window.Styles>
+    <Style Selector="Border.card">
+      <Setter Property="Background" Value="{DynamicResource SystemControlBackgroundAltHighBrush}" />
+      <Setter Property="CornerRadius" Value="8" />
+      <Setter Property="Padding" Value="14" />
+      <Setter Property="Margin" Value="0,0,0,12" />
+    </Style>
+    <Style Selector="TextBlock.heading">
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="FontSize" Value="13" />
+      <Setter Property="Margin" Value="0,0,0,10" />
+      <Setter Property="Opacity" Value="0.75" />
+    </Style>
+    <Style Selector="TextBlock.metric">
+      <Setter Property="FontSize" Value="19" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+    </Style>
+    <Style Selector="TextBlock.label">
+      <Setter Property="FontSize" Value="11" />
+      <Setter Property="Opacity" Value="0.6" />
+    </Style>
+  </Window.Styles>
+
+  <DockPanel Margin="16">
+
+    <Border DockPanel.Dock="Bottom" Classes="card" Margin="0,4,0,0">
+      <TextBlock Text="{Binding Status}" TextWrapping="Wrap" FontSize="11" Opacity="0.8" />
+    </Border>
+
+    <ScrollViewer>
+      <StackPanel>
+
+        <!-- Sensors -->
+        <Border Classes="card">
+          <StackPanel>
+            <TextBlock Classes="heading" Text="SENSORS" />
+            <Grid ColumnDefinitions="*,*" RowDefinitions="Auto,Auto,Auto,Auto">
+
+              <StackPanel Grid.Row="0" Grid.Column="0" Margin="0,0,0,12">
+                <TextBlock Classes="label" Text="CPU temperature" />
+                <TextBlock Classes="metric" Text="{Binding CpuTemp}" />
+              </StackPanel>
+
+              <StackPanel Grid.Row="0" Grid.Column="1" Margin="0,0,0,12">
+                <TextBlock Classes="label" Text="System temperature" />
+                <TextBlock Classes="metric" Text="{Binding SystemTemp}" />
+              </StackPanel>
+
+              <StackPanel Grid.Row="1" Grid.Column="0" Margin="0,0,0,12">
+                <TextBlock Classes="label" Text="CPU fan" />
+                <TextBlock Classes="metric" Text="{Binding CpuFan}" />
+              </StackPanel>
+
+              <StackPanel Grid.Row="1" Grid.Column="1" Margin="0,0,0,12">
+                <TextBlock Classes="label" Text="GPU fan" />
+                <TextBlock Classes="metric" Text="{Binding GpuFan}" />
+              </StackPanel>
+
+              <StackPanel Grid.Row="2" Grid.Column="0">
+                <TextBlock Classes="label" Text="GPU temperature" />
+                <TextBlock Classes="metric" Text="{Binding GpuTemp}" />
+              </StackPanel>
+
+              <StackPanel Grid.Row="2" Grid.Column="1">
+                <TextBlock Classes="label" Text="Fan mode" />
+                <TextBlock Classes="metric" Text="{Binding FanModeText}" />
+              </StackPanel>
+
+            </Grid>
+          </StackPanel>
+        </Border>
+
+        <!-- Thermal profile -->
+        <Border Classes="card">
+          <StackPanel>
+            <TextBlock Classes="heading" Text="THERMAL PROFILE" />
+            <ItemsControl ItemsSource="{Binding SupportedProfiles}">
+              <ItemsControl.ItemsPanel>
+                <ItemsPanelTemplate>
+                  <StackPanel Orientation="Horizontal" />
+                </ItemsPanelTemplate>
+              </ItemsControl.ItemsPanel>
+              <ItemsControl.ItemTemplate>
+                <DataTemplate x:DataType="hw:ThermalProfile">
+                  <Button Content="{Binding}"
+                          Margin="0,0,6,0"
+                          Padding="12,7"
+                          Command="{Binding $parent[ItemsControl].((vm:MainViewModel)DataContext).SetProfileCommand}"
+                          CommandParameter="{Binding}" />
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+            <TextBlock Margin="0,10,0,0" FontSize="12" Opacity="0.7">
+              <Run Text="Active:" />
+              <Run Text="{Binding CurrentProfileName}" FontWeight="SemiBold" />
+            </TextBlock>
+            <TextBlock Classes="label" Margin="0,6,0,0" TextWrapping="Wrap"
+                       Text="Turbo is a Predator-tier profile and is not offered by this firmware." />
+          </StackPanel>
+        </Border>
+
+        <!-- Fans -->
+        <Border Classes="card">
+          <StackPanel>
+            <TextBlock Classes="heading" Text="FAN CONTROL" />
+
+            <Button Content="Toggle CoolBoost"
+                    Command="{Binding ToggleCoolBoostCommand}"
+                    HorizontalAlignment="Stretch"
+                    Padding="12,8" />
+            <TextBlock Classes="label" Margin="0,4,0,12"
+                       Text="CoolBoost sets both fans to Turbo. Unavailable while custom control is on." />
+
+            <Button Content="Toggle custom fan control"
+                    Command="{Binding ToggleCustomFanCommand}"
+                    HorizontalAlignment="Stretch"
+                    Padding="12,8" />
+
+            <StackPanel IsVisible="{Binding CustomFanEnabled}" Margin="0,12,0,0">
+              <TextBlock Classes="label">
+                <Run Text="CPU duty" />
+                <Run Text="{Binding CpuDuty, StringFormat={}{0:F0}%}" />
+              </TextBlock>
+              <Slider Minimum="30" Maximum="100" TickFrequency="5"
+                      Value="{Binding CpuDuty, Mode=TwoWay}" />
+
+              <TextBlock Classes="label">
+                <Run Text="GPU duty" />
+                <Run Text="{Binding GpuDuty, StringFormat={}{0:F0}%}" />
+              </TextBlock>
+              <Slider Minimum="30" Maximum="100" TickFrequency="5"
+                      Value="{Binding GpuDuty, Mode=TwoWay}" />
+
+              <TextBlock Classes="label" TextWrapping="Wrap" Margin="0,6,0,0"
+                         Text="A watchdog reverts to Auto if this app stops responding or any sensor crosses 92 °C. Minimum duty is clamped to 30% so the fans cannot stall." />
+            </StackPanel>
+          </StackPanel>
+        </Border>
+
+        <!-- Battery -->
+        <Border Classes="card">
+          <StackPanel>
+            <TextBlock Classes="heading" Text="BATTERY" />
+
+            <CheckBox IsChecked="{Binding HealthModeEnabled, Mode=OneWay}"
+                      IsEnabled="{Binding HealthModeSupported}"
+                      Command="{Binding ToggleHealthModeCommand}"
+                      Content="Limit charge to 80%" />
+
+            <TextBlock Classes="label" Margin="0,8,0,0">
+              <Run Text="Design capacity:" />
+              <Run Text="{Binding DesignCapacity}" />
+            </TextBlock>
+
+            <TextBlock Classes="label" Margin="0,6,0,0" TextWrapping="Wrap"
+                       Text="This firmware reports no charge-bypass function, so 80% capping is the only wear-reduction mode available." />
+          </StackPanel>
+        </Border>
+
+      </StackPanel>
+    </ScrollViewer>
+  </DockPanel>
+</Window>

@@ -1,0 +1,14 @@
+bin/
+obj/
+dist/
+*.user
+*.suo
+.vs/
+.idea/
+
+# Runtime artefacts
+acerhelper.log
+*-report.txt
+*-report-v2.txt
+acer-wmi-full-dump.txt
+acer-battery-report.txt

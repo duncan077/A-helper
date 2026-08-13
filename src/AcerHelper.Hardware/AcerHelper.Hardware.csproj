@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net11.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <Platforms>x64</Platforms>
+    <AssemblyTitle>AcerHelper hardware layer</AssemblyTitle>
+    <Description>Native WMI control for Acer Nitro / Predator laptops.</Description>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+
+    <!-- Raw IWbem* vtable interop; see Interop/WbemAot.cs for why. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
+    <!-- Verified AOT-clean: no System.Management, no reflection. -->
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+
+</Project>
