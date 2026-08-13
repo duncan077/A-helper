@@ -46,6 +46,12 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     // silently undo a manual profile change a second after the user made it.
     private PowerSource _lastPowerSource = PowerSource.Unknown;
 
+    // Per-profile state: the curve currently driving the fans, the last duty it
+    // programmed, and whether a USB-C charger was seen at the last apply.
+    private IReadOnlyList<FanCurvePoint>? _activeFanCurve;
+    private int _lastCurveDuty = -1;
+    private bool _onUsbcCharger;
+
     private bool _disposed;
 
     public MainViewModel()
@@ -514,6 +520,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                         Status = "Ready";
                     }
                 });
+
+                if (s.sensors.CpuTemperatureC is { } curveTemp)
+                    await ApplyFanCurveAsync(curveTemp).ConfigureAwait(false);
             }
             catch (OperationCanceledException) { return; }
             catch (Exception ex)
@@ -877,6 +886,106 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     }
 
     /// <summary>
+    /// Whether a USB-C charger is connected.
+    ///
+    /// Only meaningful once a detection index has been observed and configured;
+    /// with none set this always reports false, so USB-C behaviour stays inert
+    /// rather than mis-firing on a guessed signal.
+    /// </summary>
+    private async Task<bool> IsUsbcChargerAsync()
+    {
+        if (!_settings.UsbcDetectionConfigured || !IsHardwareAvailable) return false;
+
+        try
+        {
+            var value = await _hw.InvokeAsync(
+                () => _wmi!.TryGetMiscSetting(_settings.UsbcDetectMiscIndex));
+
+            return value == _settings.UsbcDetectMiscValue;
+        }
+        catch (Exception ex)
+        {
+            Diagnostics.WriteException("usb-c detect", ex);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Applies everything configured for a profile: Windows power plan,
+    /// processor ceiling, boost mode, and fan curve. The USB-C plan overrides
+    /// the normal one while such a charger is attached.
+    /// </summary>
+    private async Task ApplyProfileSettingsAsync(ThermalProfile profile)
+    {
+        var settings = _settings.Profiles.For(profile);
+        if (settings.IsEmpty) return;
+
+        var usbc = await IsUsbcChargerAsync().ConfigureAwait(false);
+        _onUsbcCharger = usbc;
+
+        var plan = (usbc ? settings.UsbcPowerPlan : null) ?? settings.PowerPlan;
+        var applied = new List<string>();
+
+        if (plan is { } id && WindowsPower.SetActivePlan(id) is null)
+            applied.Add(usbc && settings.UsbcPowerPlan is not null ? "usb-c plan" : "plan");
+
+        // Order matters: both write into the active plan, so the plan switch
+        // above has to happen first or these land on the outgoing one.
+        if (settings.MaxProcessorState is { } max && WindowsPower.SetMaxProcessorState(max) is null)
+        {
+            MaxProcessorState = max;
+            applied.Add($"maxproc {max}%");
+        }
+
+        if (settings.Boost is { } boost && WindowsPower.SetBoostMode(boost) is null)
+            applied.Add($"boost {boost}");
+
+        _activeFanCurve = settings.FanCurve;
+        if (_activeFanCurve is { Count: > 0 }) applied.Add($"fan curve ({_activeFanCurve.Count} points)");
+
+        if (applied.Count > 0)
+        {
+            Diagnostics.Write($"profile {profile}{(usbc ? " (usb-c)" : "")}: {string.Join(", ", applied)}");
+            await Dispatcher.UIThread.InvokeAsync(() =>
+                Status = $"{profile}: {string.Join(", ", applied)}");
+        }
+    }
+
+    /// <summary>
+    /// Drives the active fan curve. Runs from the poll loop, so the curve is
+    /// re-evaluated at the same cadence sensors are read.
+    /// </summary>
+    private async Task ApplyFanCurveAsync(int temperatureC)
+    {
+        if (_activeFanCurve is not { Count: > 0 }) return;
+
+        var settings = _settings.Profiles.For(CurrentProfile);
+        if (settings.DutyFor(temperatureC) is not { } duty) return;
+
+        // Only act on a real change; rewriting the same duty every second is
+        // pointless EC traffic.
+        if (_lastCurveDuty == duty) return;
+        _lastCurveDuty = duty;
+
+        try
+        {
+            await _hw.InvokeAsync(() =>
+            {
+                _fanGuard ??= AcerFanGuard.Engage(_wmi!);
+                _fanGuard.SetDuty(FanId.Cpu, duty);
+                _fanGuard.SetDuty(FanId.Gpu, duty);
+            });
+
+            await Dispatcher.UIThread.InvokeAsync(() => CustomFanEnabled = true);
+        }
+        catch (Exception ex)
+        {
+            Diagnostics.WriteException("fan curve", ex);
+            _activeFanCurve = null;   // stop retrying a curve that cannot be applied
+        }
+    }
+
+    /// <summary>
     /// Applies the profile configured for a power source. Silently does nothing
     /// if that profile is not one the firmware advertises, rather than throwing
     /// on a value the user picked before we knew the capability set.
@@ -923,6 +1032,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             await _hw.InvokeAsync(() => _wmi!.SetThermalProfile(profile));
             Status = $"Profile set to {profile}";
+
+            // Reset so the curve reprograms even if the new profile's first
+            // computed duty matches the outgoing profile's last one.
+            _lastCurveDuty = -1;
+            await ApplyProfileSettingsAsync(profile).ConfigureAwait(false);
         }
         catch (Exception ex)
         {

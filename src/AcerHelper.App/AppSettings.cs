@@ -49,6 +49,33 @@ public sealed class AppSettings
     /// <summary>Whether the scan code above is an extended (E0-prefixed) key.</summary>
     public bool NitroKeyExtended { get; set; } = true;
 
+    /// <summary>Per-profile power plans, processor limits, boost and fan curves.</summary>
+    public ProfileConfig Profiles { get; } = new();
+
+    /// <summary>
+    /// Profile applied automatically when a USB-C charger is connected, if
+    /// USB-C detection is configured.
+    /// </summary>
+    public ThermalProfile? UsbcProfile { get; set; }
+
+    /// <summary>
+    /// Misc-setting index whose value identifies a USB-C charger, or 0xFF when
+    /// USB-C detection is disabled.
+    /// </summary>
+    /// <remarks>
+    /// Acer exposes no documented charger-type signal, and the ANV15-41 sensor
+    /// bitmap (0x0227) has nothing for it either. The reliable way to find one is
+    /// differential: run the probe's --watch, swap chargers, and note which index
+    /// moves. Guessing an index here would silently mis-detect, so detection
+    /// stays off until it has actually been observed.
+    /// </remarks>
+    public byte UsbcDetectMiscIndex { get; set; } = 0xFF;
+
+    /// <summary>Value at that index meaning "USB-C charger connected".</summary>
+    public byte UsbcDetectMiscValue { get; set; } = 1;
+
+    public bool UsbcDetectionConfigured => UsbcDetectMiscIndex != 0xFF;
+
     public static AppSettings Load()
     {
         var settings = new AppSettings();
@@ -86,6 +113,17 @@ public sealed class AppSettings
                         settings.NitroKeyScanCode = sc; break;
                     case nameof(NitroKeyExtended) when bool.TryParse(value, out var ext):
                         settings.NitroKeyExtended = ext; break;
+                    case "usbc_profile" when Enum.TryParse<ThermalProfile>(value, true, out var up):
+                        settings.UsbcProfile = up; break;
+                    case nameof(UsbcDetectMiscIndex) when TryParseByte(value, out var ui):
+                        settings.UsbcDetectMiscIndex = ui; break;
+                    case nameof(UsbcDetectMiscValue) when TryParseByte(value, out var uv):
+                        settings.UsbcDetectMiscValue = uv; break;
+
+                    // Anything else may be a per-profile key (scheme_*, boost_*, ...).
+                    default:
+                        settings.Profiles.TryApply(key, value);
+                        break;
                 }
             }
         }
@@ -137,7 +175,43 @@ public sealed class AppSettings
                 string.Create(CultureInfo.InvariantCulture, $"{nameof(NitroKeyExtended)}={NitroKeyExtended}"),
             };
 
-            File.WriteAllLines(FilePath, lines);
+            var extra = new List<string>
+            {
+                "",
+                "# USB-C charger. Acer exposes no documented charger-type signal, so",
+                "# detection must be observed: run the probe's --watch, swap chargers,",
+                "# and set the index that moves. 0xFF leaves detection off.",
+                string.Create(CultureInfo.InvariantCulture, $"{nameof(UsbcDetectMiscIndex)}=0x{UsbcDetectMiscIndex:X2}"),
+                string.Create(CultureInfo.InvariantCulture, $"{nameof(UsbcDetectMiscValue)}=0x{UsbcDetectMiscValue:X2}"),
+            };
+
+            if (UsbcProfile is { } up) extra.Add($"usbc_profile={up}");
+
+            extra.AddRange(
+            [
+                "",
+                "# Per-profile settings. Keyed by NAME because Acer's profile numbers",
+                "# (Quiet=0 Balanced=1 Performance=4 Eco=6) differ from other tools'.",
+                "#   scheme_<Profile>       power plan GUID",
+                "#   scheme_usbc_<Profile>  plan used while on a USB-C charger",
+                "#   maxproc_<Profile>      maximum processor state, percent",
+                "#   boost_<Profile>        boost mode 0=off 1=on 2=aggressive 3-6 efficient",
+                "#   fancurve_<Profile>     temp:duty pairs, duty floor 30",
+                "#",
+                "# Balanced (default)   381b4222-f694-41f0-9685-ff5bb260df2e",
+                "# High Performance     8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c",
+                "# Ultimate Performance e9a42b02-d5df-448d-aa00-03f14749eb61",
+                "#",
+                "# Example:",
+                "#   scheme_Performance=8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c",
+                "#   maxproc_Quiet=70",
+                "#   boost_Quiet=0",
+                "#   fancurve_Performance=50:35,60:50,70:70,80:90,90:100",
+            ]);
+
+            extra.AddRange(Profiles.ToLines());
+
+            File.WriteAllLines(FilePath, [.. lines, .. extra]);
         }
         catch (Exception ex)
         {

@@ -30,6 +30,21 @@ public enum WindowsPowerMode
 
 public sealed record PowerPlan(Guid Id, string Name);
 
+/// <summary>
+/// Processor performance boost mode - what Windows exposes as turbo behaviour.
+/// Values are the documented PERFBOOSTMODE settings.
+/// </summary>
+public enum ProcessorBoostMode : uint
+{
+    Disabled = 0,
+    Enabled = 1,
+    Aggressive = 2,
+    EfficientEnabled = 3,
+    EfficientAggressive = 4,
+    AggressiveAtGuaranteed = 5,
+    EfficientAggressiveAtGuaranteed = 6,
+}
+
 [SupportedOSPlatform("windows")]
 internal static unsafe partial class WindowsPower
 {
@@ -46,6 +61,14 @@ internal static unsafe partial class WindowsPower
     private static readonly Guid SubProcessor = new("54533251-82be-4824-96c1-47b60b740d00");
     private static readonly Guid ProcThrottleMax = new("bc5038f7-23e0-4960-96da-33abaf5935ec");
     private static readonly Guid ProcThrottleMin = new("893dee8e-2bef-41e0-89c6-b55d0929964c");
+
+    /// <summary>Processor performance boost mode - the turbo selector.</summary>
+    private static readonly Guid PerfBoostMode = new("be337238-0d82-4146-a960-4f3749d470c7");
+
+    /// <summary>Well-known Windows power plans, for config convenience.</summary>
+    public static readonly Guid PlanBalanced = new("381b4222-f694-41f0-9685-ff5bb260df2e");
+    public static readonly Guid PlanHighPerformance = new("8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c");
+    public static readonly Guid PlanUltimatePerformance = new("e9a42b02-d5df-448d-aa00-03f14749eb61");
 
     private const uint ACCESS_SCHEME = 16;
 
@@ -208,6 +231,29 @@ internal static unsafe partial class WindowsPower
         var dc = PowerWriteDCValueIndex(0, plan, SubProcessor, ProcThrottleMax, (uint)percent);
         if (dc != ERROR_SUCCESS) return $"PowerWriteDCValueIndex failed ({dc}).";
 
+        return SetActivePlan(plan);
+    }
+
+    public static ProcessorBoostMode? GetBoostMode()
+    {
+        if (GetActivePlan() is not { } plan) return null;
+
+        return PowerReadACValueIndex(0, plan, SubProcessor, PerfBoostMode, out var value) == ERROR_SUCCESS
+            ? (ProcessorBoostMode)value
+            : null;
+    }
+
+    /// <summary>Sets boost mode on the active plan, AC and battery.</summary>
+    public static string? SetBoostMode(ProcessorBoostMode mode)
+    {
+        if (GetActivePlan() is not { } plan) return "No active power plan.";
+
+        var ac = PowerWriteACValueIndex(0, plan, SubProcessor, PerfBoostMode, (uint)mode);
+        if (ac != ERROR_SUCCESS) return $"PowerWriteACValueIndex(boost) failed ({ac}).";
+
+        PowerWriteDCValueIndex(0, plan, SubProcessor, PerfBoostMode, (uint)mode);
+
+        // As with the throttle limits, the write is inert until re-activation.
         return SetActivePlan(plan);
     }
 
