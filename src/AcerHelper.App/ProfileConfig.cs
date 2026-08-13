@@ -67,9 +67,41 @@ public sealed class ProfileSettings
     }
 }
 
+/// <summary>
+/// One editable row in the fan curve editor: a fixed temperature band with an
+/// adjustable duty.
+/// </summary>
+public sealed class FanCurveRow(int temperatureC, double duty)
+    : System.ComponentModel.INotifyPropertyChanged
+{
+    private double _duty = duty;
+
+    public int TemperatureC { get; } = temperatureC;
+    public string Label => $"{TemperatureC} °C";
+
+    public double Duty
+    {
+        get => _duty;
+        set
+        {
+            if (Math.Abs(_duty - value) < 0.5) return;
+            _duty = value;
+            PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(Duty)));
+        }
+    }
+
+    public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
+}
+
 /// <summary>Parses and holds the per-profile section of acerhelper.conf.</summary>
 public sealed class ProfileConfig
 {
+    /// <summary>
+    /// Temperature bands offered by the editor. Fixed rather than free-form so
+    /// the UI stays a handful of sliders instead of a point-dragging surface.
+    /// </summary>
+    public static readonly int[] EditorBands = [40, 50, 60, 70, 80, 90];
+
     private readonly Dictionary<ThermalProfile, ProfileSettings> _profiles = [];
 
     public ProfileSettings For(ThermalProfile profile)
@@ -152,6 +184,16 @@ public sealed class ProfileConfig
 
         points.Sort((a, b) => a.TemperatureC.CompareTo(b.TemperatureC));
         return points;
+    }
+
+    /// <summary>Stores a fan curve for a profile, replacing any existing one.</summary>
+    public void SetFanCurve(ThermalProfile profile, IReadOnlyList<FanCurvePoint> points)
+        => Ensure(profile).FanCurve = points.Count == 0 ? null : points;
+
+    /// <summary>Removes a profile's fan curve.</summary>
+    public void ClearFanCurve(ThermalProfile profile)
+    {
+        if (_profiles.TryGetValue(profile, out var settings)) settings.FanCurve = null;
     }
 
     /// <summary>Renders the current configuration back out, for the sample file.</summary>

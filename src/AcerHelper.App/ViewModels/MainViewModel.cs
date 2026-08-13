@@ -50,7 +50,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     // programmed, and whether a USB-C charger was seen at the last apply.
     private IReadOnlyList<FanCurvePoint>? _activeFanCurve;
     private int _lastCurveDuty = -1;
-    private bool _onUsbcCharger;
+
+    // Adapter type is reported by AC adapter events, which only fire on change,
+    // so it stays null until one is seen rather than assuming a type at startup.
+    private AcAdapterType? _adapterType;
 
     private bool _disposed;
 
@@ -71,6 +74,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         ResetGpuOffsetsCommand = new RelayCommand(_ => _ = ResetGpuOffsetsAsync(), _ => GpuAvailable);
         ApplyProcessorStateCommand = new RelayCommand(_ => ApplyProcessorState(),
                                                       _ => WindowsPowerAvailable);
+        SaveFanCurveCommand = new RelayCommand(_ => SaveFanCurve(), _ => IsHardwareAvailable);
+        ClearFanCurveCommand = new RelayCommand(_ => ClearFanCurve(), _ => IsHardwareAvailable);
 
         LoadRefreshRates();
         InitialiseTuning();
@@ -173,6 +178,31 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private double _gpuMemoryOffset;
     public double GpuMemoryOffset { get => _gpuMemoryOffset; set => Set(ref _gpuMemoryOffset, value); }
+
+    // --------------------------------------------------- fan curve editor
+
+    /// <summary>
+    /// Editable curve for <see cref="CurveProfile"/>. Reloaded whenever that
+    /// selection changes, so each profile keeps its own curve.
+    /// </summary>
+    public ObservableCollection<FanCurveRow> FanCurveRows { get; } = [];
+
+    private ThermalProfile _curveProfile = ThermalProfile.Balanced;
+    public ThermalProfile CurveProfile
+    {
+        get => _curveProfile;
+        set { if (Set(ref _curveProfile, value)) LoadCurveRows(value); }
+    }
+
+    private bool _curveEnabled;
+    public bool CurveEnabled
+    {
+        get => _curveEnabled;
+        set { if (Set(ref _curveEnabled, value)) RaiseCanExecuteChanged(); }
+    }
+
+    public ICommand SaveFanCurveCommand { get; private set; } = null!;
+    public ICommand ClearFanCurveCommand { get; private set; } = null!;
 
     // ------------------------------------------------------- windows power
 
@@ -294,6 +324,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public string OverdriveRaw { get => _overdriveRaw; private set => Set(ref _overdriveRaw, value); }
 
     // -------------------------------------------------- power auto-switching
+
+    private string _adapterText = "unknown";
+    public string AdapterText { get => _adapterText; private set => Set(ref _adapterText, value); }
 
     private string _powerSourceText = "--";
     public string PowerSourceText { get => _powerSourceText; private set => Set(ref _powerSourceText, value); }
@@ -435,6 +468,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             DesignCapacity = opened.Item6 == "--" ? "--" : $"{opened.Item6} mAh";
 
             IsHardwareAvailable = true;
+            _curveProfile = CurrentProfile;
+            OnPropertyChanged(nameof(CurveProfile));
+            LoadCurveRows(CurrentProfile);
+
             Status = "Ready";
             Diagnostics.Write($"init ok: profiles={opened.Item2} current={CurrentProfile}");
 
@@ -725,6 +762,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 Diagnostics.Write($"APGeEvent function={e.Function} key={e.KeyNumber}  {e.DescribeRaw()}");
 
                 if (MatchesNitroKey(e)) _ = CycleProfileAsync();
+
+                if (e.AdapterType is { } adapter) _ = OnAdapterChangedAsync(adapter);
             };
 
             watcher.Failed += (_, ex) =>
@@ -793,6 +832,41 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private bool MatchesNitroKey(AcerHotkeyEvent e)
         => (byte)e.Function == _settings.NitroKeyFunction
            && (_settings.NitroKeyNumber == 0xFF || e.KeyNumber == _settings.NitroKeyNumber);
+
+    /// <summary>
+    /// Handles an adapter change. A USB-C charger can select both a different
+    /// profile and a different power plan, so the profile is re-applied even
+    /// when it has not itself changed.
+    /// </summary>
+    private async Task OnAdapterChangedAsync(AcAdapterType adapter)
+    {
+        if (_adapterType == adapter) return;
+
+        var previous = _adapterType;
+        _adapterType = adapter;
+        Diagnostics.Write($"adapter {previous?.ToString() ?? "unknown"} -> {adapter}");
+
+        await Dispatcher.UIThread.InvokeAsync(() => AdapterText = Describe(adapter));
+
+        if (adapter == AcAdapterType.None) return;
+
+        // A dedicated USB-C profile takes precedence; otherwise just re-apply
+        // the current one so its USB-C power plan can take effect.
+        if (adapter == AcAdapterType.UsbC && _settings.UsbcProfile is { } usbcProfile)
+        {
+            await SetProfileAsync(usbcProfile).ConfigureAwait(false);
+            return;
+        }
+
+        await ApplyProfileSettingsAsync(CurrentProfile).ConfigureAwait(false);
+    }
+
+    private static string Describe(AcAdapterType adapter) => adapter switch
+    {
+        AcAdapterType.None => "on battery",
+        AcAdapterType.UsbC => "USB-C charger",
+        _ => "barrel charger",
+    };
 
     /// <summary>Advances to the next supported profile. Bound to the Nitro key.</summary>
     private async Task CycleProfileAsync()
@@ -886,29 +960,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     }
 
     /// <summary>
-    /// Whether a USB-C charger is connected.
-    ///
-    /// Only meaningful once a detection index has been observed and configured;
-    /// with none set this always reports false, so USB-C behaviour stays inert
-    /// rather than mis-firing on a guessed signal.
+    /// Whether a USB-C charger is attached, per the last AC adapter event.
     /// </summary>
-    private async Task<bool> IsUsbcChargerAsync()
-    {
-        if (!_settings.UsbcDetectionConfigured || !IsHardwareAvailable) return false;
-
-        try
-        {
-            var value = await _hw.InvokeAsync(
-                () => _wmi!.TryGetMiscSetting(_settings.UsbcDetectMiscIndex));
-
-            return value == _settings.UsbcDetectMiscValue;
-        }
-        catch (Exception ex)
-        {
-            Diagnostics.WriteException("usb-c detect", ex);
-            return false;
-        }
-    }
+    private bool IsUsbcCharger => _adapterType == AcAdapterType.UsbC;
 
     /// <summary>
     /// Applies everything configured for a profile: Windows power plan,
@@ -920,8 +974,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         var settings = _settings.Profiles.For(profile);
         if (settings.IsEmpty) return;
 
-        var usbc = await IsUsbcChargerAsync().ConfigureAwait(false);
-        _onUsbcCharger = usbc;
+        var usbc = IsUsbcCharger;
 
         var plan = (usbc ? settings.UsbcPowerPlan : null) ?? settings.PowerPlan;
         var applied = new List<string>();
@@ -949,6 +1002,86 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             await Dispatcher.UIThread.InvokeAsync(() =>
                 Status = $"{profile}: {string.Join(", ", applied)}");
         }
+    }
+
+    /// <summary>
+    /// Fills the editor from a profile's stored curve, or from a straight ramp
+    /// when it has none, so the sliders always start somewhere sensible.
+    /// </summary>
+    private void LoadCurveRows(ThermalProfile profile)
+    {
+        var stored = _settings.Profiles.For(profile);
+
+        FanCurveRows.Clear();
+        foreach (var band in ProfileConfig.EditorBands)
+        {
+            // DutyFor interpolates, so a stored curve with different bands still
+            // maps cleanly onto the editor's.
+            var duty = stored.DutyFor(band) ?? DefaultDutyFor(band);
+            FanCurveRows.Add(new FanCurveRow(band, duty));
+        }
+
+        CurveEnabled = stored.FanCurve is { Count: > 0 };
+    }
+
+    /// <summary>A gentle ramp from the 30% floor, used when nothing is stored.</summary>
+    private static byte DefaultDutyFor(int temperatureC) => temperatureC switch
+    {
+        <= 40 => 30,
+        <= 50 => 35,
+        <= 60 => 45,
+        <= 70 => 60,
+        <= 80 => 80,
+        _ => 100,
+    };
+
+    private void SaveFanCurve()
+    {
+        var points = FanCurveRows
+            .Select(r => new FanCurvePoint(r.TemperatureC, (byte)Math.Clamp(r.Duty, 30, 100)))
+            .ToList();
+
+        _settings.Profiles.SetFanCurve(CurveProfile, points);
+        _settings.Save();
+
+        CurveEnabled = true;
+
+        // Only takes effect immediately if it is the profile in use.
+        if (CurveProfile == CurrentProfile)
+        {
+            _activeFanCurve = points;
+            _lastCurveDuty = -1;
+            Status = $"Fan curve saved and active for {CurveProfile}";
+        }
+        else
+        {
+            Status = $"Fan curve saved for {CurveProfile} (applies when that profile is selected)";
+        }
+
+        Diagnostics.Write($"fan curve {CurveProfile}: "
+                          + string.Join(",", points.Select(p => $"{p.TemperatureC}:{p.DutyPercent}")));
+    }
+
+    private void ClearFanCurve()
+    {
+        _settings.Profiles.ClearFanCurve(CurveProfile);
+        _settings.Save();
+
+        CurveEnabled = false;
+
+        if (CurveProfile == CurrentProfile)
+        {
+            _activeFanCurve = null;
+            _lastCurveDuty = -1;
+
+            // Hand the fans back to the EC rather than leaving them at whatever
+            // duty the curve last programmed.
+            _ = _hw.InvokeAsync(() => { _fanGuard?.Dispose(); _fanGuard = null; });
+            CustomFanEnabled = false;
+        }
+
+        LoadCurveRows(CurveProfile);
+        Status = $"Fan curve cleared for {CurveProfile}";
     }
 
     /// <summary>
@@ -1037,6 +1170,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             // computed duty matches the outgoing profile's last one.
             _lastCurveDuty = -1;
             await ApplyProfileSettingsAsync(profile).ConfigureAwait(false);
+
+            await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                _curveProfile = profile;
+                OnPropertyChanged(nameof(CurveProfile));
+                LoadCurveRows(profile);
+            });
         }
         catch (Exception ex)
         {
@@ -1156,6 +1296,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         (ApplyGpuOffsetsCommand as RelayCommand)?.RaiseCanExecuteChanged();
         (ResetGpuOffsetsCommand as RelayCommand)?.RaiseCanExecuteChanged();
         (ApplyProcessorStateCommand as RelayCommand)?.RaiseCanExecuteChanged();
+        (SaveFanCurveCommand as RelayCommand)?.RaiseCanExecuteChanged();
+        (ClearFanCurveCommand as RelayCommand)?.RaiseCanExecuteChanged();
     }
 
     // ------------------------------------------------------------ plumbing

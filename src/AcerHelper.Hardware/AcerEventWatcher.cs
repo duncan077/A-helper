@@ -51,12 +51,43 @@ public enum AcerEventFunction : byte
     Undocumented09 = 0x09,
 }
 
+/// <summary>
+/// Power adapter type, from the key number of an <see cref="AcerEventFunction.AcAdapter"/>
+/// event.
+/// </summary>
+/// <remarks>
+/// acer-wmi.c handles WMID_AC_EVENT but never decodes key_num, so this mapping
+/// is undocumented. Observed on ANV15-41: 0x00 on unplug, 0x01 with the barrel
+/// adapter, 0x04 with a USB-C PD charger.
+/// </remarks>
+public enum AcAdapterType : byte
+{
+    None = 0x00,
+    Standard = 0x01,
+    UsbC = 0x04,
+}
+
 public sealed record AcerHotkeyEvent(
     AcerEventFunction Function,
     byte KeyNumber,
     ushort DeviceState,
     IReadOnlyDictionary<string, object?> Raw)
 {
+    /// <summary>
+    /// Adapter type when this is an AC adapter event, otherwise null.
+    /// Unrecognised key numbers map to <see cref="AcAdapterType.Standard"/>
+    /// rather than being dropped - any adapter that is not identifiably USB-C
+    /// should behave like the normal one.
+    /// </summary>
+    public AcAdapterType? AdapterType => Function != AcerEventFunction.AcAdapter
+        ? null
+        : KeyNumber switch
+        {
+            0x00 => AcAdapterType.None,
+            0x04 => AcAdapterType.UsbC,
+            _ => AcAdapterType.Standard,
+        };
+
     /// <summary>
     /// Hotkey scancode names, from the acer-wmi.c keymap. Present so an unknown
     /// key can be identified from a log without cross-referencing the kernel.

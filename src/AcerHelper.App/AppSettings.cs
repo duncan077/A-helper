@@ -58,23 +58,6 @@ public sealed class AppSettings
     /// </summary>
     public ThermalProfile? UsbcProfile { get; set; }
 
-    /// <summary>
-    /// Misc-setting index whose value identifies a USB-C charger, or 0xFF when
-    /// USB-C detection is disabled.
-    /// </summary>
-    /// <remarks>
-    /// Acer exposes no documented charger-type signal, and the ANV15-41 sensor
-    /// bitmap (0x0227) has nothing for it either. The reliable way to find one is
-    /// differential: run the probe's --watch, swap chargers, and note which index
-    /// moves. Guessing an index here would silently mis-detect, so detection
-    /// stays off until it has actually been observed.
-    /// </remarks>
-    public byte UsbcDetectMiscIndex { get; set; } = 0xFF;
-
-    /// <summary>Value at that index meaning "USB-C charger connected".</summary>
-    public byte UsbcDetectMiscValue { get; set; } = 1;
-
-    public bool UsbcDetectionConfigured => UsbcDetectMiscIndex != 0xFF;
 
     public static AppSettings Load()
     {
@@ -115,10 +98,6 @@ public sealed class AppSettings
                         settings.NitroKeyExtended = ext; break;
                     case "usbc_profile" when Enum.TryParse<ThermalProfile>(value, true, out var up):
                         settings.UsbcProfile = up; break;
-                    case nameof(UsbcDetectMiscIndex) when TryParseByte(value, out var ui):
-                        settings.UsbcDetectMiscIndex = ui; break;
-                    case nameof(UsbcDetectMiscValue) when TryParseByte(value, out var uv):
-                        settings.UsbcDetectMiscValue = uv; break;
 
                     // Anything else may be a per-profile key (scheme_*, boost_*, ...).
                     default:
@@ -178,11 +157,9 @@ public sealed class AppSettings
             var extra = new List<string>
             {
                 "",
-                "# USB-C charger. Acer exposes no documented charger-type signal, so",
-                "# detection must be observed: run the probe's --watch, swap chargers,",
-                "# and set the index that moves. 0xFF leaves detection off.",
-                string.Create(CultureInfo.InvariantCulture, $"{nameof(UsbcDetectMiscIndex)}=0x{UsbcDetectMiscIndex:X2}"),
-                string.Create(CultureInfo.InvariantCulture, $"{nameof(UsbcDetectMiscValue)}=0x{UsbcDetectMiscValue:X2}"),
+                "# USB-C charger. Detected from the AC adapter event's key number:",
+                "# 0x00 unplugged, 0x01 barrel, 0x04 USB-C. No configuration needed.",
+                "# usbc_profile selects a profile to switch to when USB-C is attached.",
             };
 
             if (UsbcProfile is { } up) extra.Add($"usbc_profile={up}");

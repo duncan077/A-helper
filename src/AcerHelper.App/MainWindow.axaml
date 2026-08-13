@@ -128,6 +128,47 @@
                     HorizontalAlignment="Stretch"
                     Padding="12,8" />
 
+            <!-- Fan curve editor, per profile -->
+            <Border Background="{DynamicResource SystemControlBackgroundBaseLowBrush}"
+                    CornerRadius="6" Padding="10" Margin="0,12,0,0">
+              <StackPanel>
+                <TextBlock Classes="label" Text="FAN CURVE" Margin="0,0,0,6" />
+
+                <Grid ColumnDefinitions="Auto,*" Margin="0,0,0,8">
+                  <TextBlock Grid.Column="0" Text="Profile" FontSize="12"
+                             VerticalAlignment="Center" Margin="0,0,10,0" />
+                  <ComboBox Grid.Column="1" HorizontalAlignment="Stretch"
+                            ItemsSource="{Binding SupportedProfiles}"
+                            SelectedItem="{Binding CurveProfile, Mode=TwoWay}" />
+                </Grid>
+
+                <ItemsControl ItemsSource="{Binding FanCurveRows}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="local:FanCurveRow">
+                      <Grid ColumnDefinitions="46,*,44" Margin="0,1">
+                        <TextBlock Grid.Column="0" Text="{Binding Label}"
+                                   FontSize="11" Opacity="0.7" VerticalAlignment="Center" />
+                        <Slider Grid.Column="1" Minimum="30" Maximum="100" TickFrequency="5"
+                                Value="{Binding Duty, Mode=TwoWay}" />
+                        <TextBlock Grid.Column="2" FontSize="11" Opacity="0.7"
+                                   VerticalAlignment="Center" HorizontalAlignment="Right"
+                                   Text="{Binding Duty, StringFormat={}{0:F0}%}" />
+                      </Grid>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+
+                <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                  <Button Content="Save curve" Command="{Binding SaveFanCurveCommand}"
+                          Padding="12,6" Margin="0,0,6,0" />
+                  <Button Content="Clear" Command="{Binding ClearFanCurveCommand}" Padding="12,6" />
+                </StackPanel>
+
+                <TextBlock Classes="label" Margin="0,6,0,0" TextWrapping="Wrap"
+                           Text="Duty is interpolated between bands and applied while that profile is active. The 30% floor and the watchdog still apply." />
+              </StackPanel>
+            </Border>
+
             <StackPanel IsVisible="{Binding CustomFanEnabled}" Margin="0,12,0,0">
               <TextBlock Classes="label">
                 <Run Text="CPU duty" />
@@ -269,10 +310,16 @@
           <StackPanel>
             <TextBlock Classes="heading" Text="POWER" />
 
-            <StackPanel Margin="0,0,0,12">
-              <TextBlock Classes="label" Text="Power source" />
-              <TextBlock Classes="metric" Text="{Binding PowerSourceText}" />
-            </StackPanel>
+            <Grid ColumnDefinitions="*,*" Margin="0,0,0,12">
+              <StackPanel Grid.Column="0">
+                <TextBlock Classes="label" Text="Power source" />
+                <TextBlock Classes="metric" Text="{Binding PowerSourceText}" />
+              </StackPanel>
+              <StackPanel Grid.Column="1">
+                <TextBlock Classes="label" Text="Adapter" />
+                <TextBlock Classes="metric" Text="{Binding AdapterText}" />
+              </StackPanel>
+            </Grid>
 
             <CheckBox IsChecked="{Binding AutoSwitchEnabled, Mode=TwoWay}"
                       Content="Switch profile automatically" />
