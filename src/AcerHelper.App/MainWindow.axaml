@@ -172,6 +172,19 @@
               <Slider Minimum="-500" Maximum="1000" TickFrequency="50"
                       Value="{Binding GpuMemoryOffset, Mode=TwoWay}" />
 
+              <StackPanel IsVisible="{Binding GpuPowerAdjustable}">
+                <TextBlock Classes="label">
+                  <Run Text="Power limit" />
+                  <Run Text="{Binding GpuPowerLimit, StringFormat={}{0:F0}%}" />
+                </TextBlock>
+                <Slider Minimum="{Binding GpuPowerMin}" Maximum="{Binding GpuPowerMax}"
+                        TickFrequency="5" Value="{Binding GpuPowerLimit, Mode=TwoWay}" />
+              </StackPanel>
+              <TextBlock Classes="label" IsVisible="{Binding !GpuPowerAdjustable}">
+                <Run Text="Power limit:" />
+                <Run Text="{Binding GpuPowerRange}" />
+              </TextBlock>
+
               <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
                 <Button Content="Apply" Command="{Binding ApplyGpuOffsetsCommand}"
                         Padding="14,6" Margin="0,0,6,0" />
@@ -194,11 +207,28 @@
               <Slider Minimum="-50" Maximum="10" TickFrequency="5"
                       Value="{Binding CurveOffset, Mode=TwoWay}" />
 
-              <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+              <StackPanel Orientation="Horizontal" Margin="0,6,0,10">
                 <Button Content="Apply undervolt" Command="{Binding ApplyCurveCommand}"
                         Padding="14,6" Margin="0,0,6,0" />
                 <Button Content="Reset" Command="{Binding ResetCurveCommand}" Padding="14,6" />
               </StackPanel>
+
+              <TextBlock Classes="label">
+                <Run Text="Sustained power limit" />
+                <Run Text="{Binding CpuPowerLimit, StringFormat={}{0:F0} W}" />
+              </TextBlock>
+              <Slider Minimum="5" Maximum="120" TickFrequency="5"
+                      Value="{Binding CpuPowerLimit, Mode=TwoWay}" />
+
+              <TextBlock Classes="label">
+                <Run Text="Temperature limit" />
+                <Run Text="{Binding CpuTempLimit, StringFormat={}{0:F0} °C}" />
+              </TextBlock>
+              <Slider Minimum="60" Maximum="100" TickFrequency="5"
+                      Value="{Binding CpuTempLimit, Mode=TwoWay}" />
+
+              <Button Content="Apply CPU limits" Command="{Binding ApplyCpuPowerCommand}"
+                      Padding="14,6" Margin="0,6,0,0" HorizontalAlignment="Left" />
             </StackPanel>
 
             <TextBlock Classes="label" Margin="0,6,0,0" TextWrapping="Wrap"

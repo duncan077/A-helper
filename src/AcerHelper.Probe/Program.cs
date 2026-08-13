@@ -391,6 +391,20 @@ static int Gpu(string[] args)
                                   + $"range {o.MinMhz}..{o.MaxMhz} MHz   "
                                   + (o.IsEditable ? "editable" : "LOCKED"));
             }
+
+            var info = nv.GetPowerLimitInfo(i);
+            if (info is null)
+            {
+                Console.WriteLine("  power      not exposed by the driver");
+            }
+            else
+            {
+                var current = nv.GetPowerLimit(i);
+                Console.WriteLine($"  power      {current?.ToString() ?? "?"}%   "
+                                  + $"range {info.MinPercent}..{info.MaxPercent}% "
+                                  + $"(default {info.DefaultPercent}%)   "
+                                  + (info.IsAdjustable ? "adjustable" : "LOCKED"));
+            }
         }
 
         var core = ParseOffset(args, "--gpu-core=");

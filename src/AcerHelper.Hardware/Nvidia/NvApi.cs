@@ -46,6 +46,9 @@ public sealed unsafe partial class NvApi : IDisposable
     private const uint ID_GPU_GetPstates20 = 0x6FF81213;
     private const uint ID_GPU_SetPstates20 = 0x0F4DAE6B;
     private const uint ID_GPU_GetAllClockFrequencies = 0xDCB616C3;
+    private const uint ID_GPU_ClientPowerPoliciesGetInfo = 0x34206D86;
+    private const uint ID_GPU_ClientPowerPoliciesGetStatus = 0x70916171;
+    private const uint ID_GPU_ClientPowerPoliciesSetStatus = 0xAD95F5ED;
 
     private const int NVAPI_OK = 0;
     private const int MaxPhysicalGpus = 64;
@@ -273,6 +276,100 @@ public sealed unsafe partial class NvApi : IDisposable
     /// <summary>Clears the offset for a domain.</summary>
     public void ResetClockOffset(int gpuIndex, NvClockDomain domain)
         => SetClockOffset(gpuIndex, domain, 0);
+
+    // -------------------------------------------------------- power limits
+    //
+    // NV_GPU_POWER_INFO: version + valid + count, then 4 entries of
+    //   pstate(4) unknown[2](8) min(4) unknown[2](8) def(4) unknown[2](8)
+    //   max(4) unknown(4) = 44 bytes
+    // NV_GPU_POWER_STATUS: version + count, then 4 entries of 16 bytes.
+    // Limits are expressed in thousandths of a percent (100000 == 100%).
+
+    private const int PowerInfoEntrySize = 44;
+    private const int PowerInfoSize = 8 + (4 * PowerInfoEntrySize);      // 184
+    private const uint PowerInfoVersion = PowerInfoSize | (1u << 16);
+
+    private const int PowerStatusEntrySize = 16;
+    private const int PowerStatusSize = 8 + (4 * PowerStatusEntrySize);  // 72
+    private const uint PowerStatusVersion = PowerStatusSize | (1u << 16);
+
+    /// <summary>Power limit bounds, as a percentage of the board's default.</summary>
+    public sealed record PowerLimitInfo(int MinPercent, int DefaultPercent, int MaxPercent)
+    {
+        /// <summary>
+        /// Laptop GPUs commonly pin all three to the same value, which means
+        /// the vendor has locked the power target.
+        /// </summary>
+        public bool IsAdjustable => MaxPercent > MinPercent;
+    }
+
+    /// <summary>Reads the adjustable power-limit range, or null if unsupported.</summary>
+    public PowerLimitInfo? GetPowerLimitInfo(int gpuIndex)
+    {
+        var get = (delegate* unmanaged[Cdecl]<nint, byte*, int>)
+            Resolve(ID_GPU_ClientPowerPoliciesGetInfo, "NvAPI_GPU_ClientPowerPoliciesGetInfo");
+
+        var buffer = stackalloc byte[PowerInfoSize];
+        new Span<byte>(buffer, PowerInfoSize).Clear();
+        *(uint*)buffer = PowerInfoVersion;
+
+        if (get(_gpuHandles[gpuIndex], buffer) != NVAPI_OK) return null;
+
+        // Each limit is followed by 8 bytes of unknown, so they sit 12 apart:
+        // pstate@0, min@12, def@24, max@36. Reading def at 28 returned 0 on an
+        // RTX 4080 where min/max were already correct, which is what pinned the
+        // spacing down.
+        var entry = buffer + 8;
+        return new PowerLimitInfo(
+            MinPercent: (int)(*(uint*)(entry + 12) / 1000),
+            DefaultPercent: (int)(*(uint*)(entry + 24) / 1000),
+            MaxPercent: (int)(*(uint*)(entry + 36) / 1000));
+    }
+
+    /// <summary>Current power limit as a percentage, or null if unsupported.</summary>
+    public int? GetPowerLimit(int gpuIndex)
+    {
+        var get = (delegate* unmanaged[Cdecl]<nint, byte*, int>)
+            Resolve(ID_GPU_ClientPowerPoliciesGetStatus, "NvAPI_GPU_ClientPowerPoliciesGetStatus");
+
+        var buffer = stackalloc byte[PowerStatusSize];
+        new Span<byte>(buffer, PowerStatusSize).Clear();
+        *(uint*)buffer = PowerStatusVersion;
+
+        if (get(_gpuHandles[gpuIndex], buffer) != NVAPI_OK) return null;
+
+        return (int)(*(uint*)(buffer + 8 + 8) / 1000);
+    }
+
+    /// <summary>
+    /// Sets the power limit as a percentage of default. Refused outside the
+    /// range the driver reports, and on boards where it is locked.
+    /// </summary>
+    public void SetPowerLimit(int gpuIndex, int percent)
+    {
+        var info = GetPowerLimitInfo(gpuIndex)
+            ?? throw new NotSupportedException("This GPU does not expose a power limit.");
+
+        if (!info.IsAdjustable)
+            throw new NotSupportedException(
+                $"Power limit is locked at {info.DefaultPercent}% on this GPU.");
+
+        if (percent < info.MinPercent || percent > info.MaxPercent)
+            throw new ArgumentOutOfRangeException(nameof(percent), percent,
+                $"Driver allows {info.MinPercent}..{info.MaxPercent}%.");
+
+        var set = (delegate* unmanaged[Cdecl]<nint, byte*, int>)
+            Resolve(ID_GPU_ClientPowerPoliciesSetStatus, "NvAPI_GPU_ClientPowerPoliciesSetStatus");
+
+        var buffer = stackalloc byte[PowerStatusSize];
+        new Span<byte>(buffer, PowerStatusSize).Clear();
+
+        *(uint*)buffer = PowerStatusVersion;
+        *(uint*)(buffer + 4) = 1;                              // one entry
+        *(uint*)(buffer + 8 + 8) = (uint)(percent * 1000);     // entry[0].power
+
+        Check(set(_gpuHandles[gpuIndex], buffer), "NvAPI_GPU_ClientPowerPoliciesSetStatus");
+    }
 
     public void Dispose()
     {

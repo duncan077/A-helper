@@ -343,8 +343,18 @@ public sealed class RyzenSmu : IDisposable
     public const int MinCurveOffset = -50;
     public const int MaxCurveOffset = 10;
 
-    /// <summary>Curve Optimizer offsets are a 16-bit two's complement magnitude.</summary>
-    private static uint EncodeCurve(int value) => (uint)(value & 0xFFFF);
+    /// <summary>
+    /// Curve Optimizer offsets use a 20-bit form: a negative offset is encoded
+    /// as 0x100000 minus its magnitude.
+    /// </summary>
+    /// <remarks>
+    /// NOT 16-bit two's complement. Encoding -10 as 0xFFF6 instead of 0xFFFF6
+    /// made a Rembrandt SMU answer 0xFF (Failed) rather than 0xFE (UnknownCmd) -
+    /// the command was recognised, the operand was not valid. Matches RyzenAdj's
+    /// documented "use 0x100000-N for negative values".
+    /// </remarks>
+    private static uint EncodeCurve(int steps)
+        => steps < 0 ? (uint)(0x100000 - -steps) : (uint)steps;
 
     /// <summary>
     /// Applies an all-core Curve Optimizer offset. Negative undervolts.
@@ -389,6 +399,47 @@ public sealed class RyzenSmu : IDisposable
         {
             SmuFamily.Renoir => SendMp1(0x64, v),
             SmuFamily.Mobile => SendPsmu(0xB7, v),
+            _ => new SmuResult(SmuStatus.Failed, SmuFailure.NoMailboxForFamily, $"{Family}"),
+        };
+    }
+
+    /// <summary>
+    /// Sets the sustained power limit (STAPM) in watts.
+    /// </summary>
+    /// <remarks>
+    /// On ASUS machines G-Helper takes this route through ASUS ACPI instead.
+    /// ANV15-41 has no ACPI power-limit interface at all - OC_1 is absent and
+    /// OC_2 reads 0xFF - so the SMU is the only path here, with no fallback.
+    /// </remarks>
+    public SmuResult SetSustainedPowerLimit(int watts) => SetPowerLimit(watts, 0x1A, 0x14, 0x4F);
+
+    /// <summary>Sets the fast package power limit (PPT fast) in watts.</summary>
+    public SmuResult SetFastPowerLimit(int watts) => SetPowerLimit(watts, 0x1B, 0x15, 0x3E);
+
+    /// <summary>Sets the slow package power limit (PPT slow) in watts.</summary>
+    public SmuResult SetSlowPowerLimit(int watts) => SetPowerLimit(watts, 0x1C, 0x16, 0x5F);
+
+    /// <summary>Lowest and highest wattage this code will program.</summary>
+    public const int MinPowerLimitWatts = 5;
+    public const int MaxPowerLimitWatts = 120;
+
+    /// <summary>
+    /// Power limits share one shape: milliwatts to an MP1 command that differs
+    /// per family. Renoir additionally mirrors to PSMU, which this does not do -
+    /// no Renoir hardware has been available to verify against.
+    /// </summary>
+    private SmuResult SetPowerLimit(int watts, uint renoirCmd, uint mobileCmd, uint raphaelCmd)
+    {
+        if (!IsUsable)
+            return new SmuResult(SmuStatus.Failed, SmuFailure.NotUsable, "SMU not validated");
+
+        var milliwatts = (uint)Math.Clamp(watts, MinPowerLimitWatts, MaxPowerLimitWatts) * 1000;
+
+        return Family switch
+        {
+            SmuFamily.Renoir => SendMp1(renoirCmd, milliwatts),
+            SmuFamily.Mobile => SendMp1(mobileCmd, milliwatts),
+            SmuFamily.Raphael => SendMp1(raphaelCmd, milliwatts),
             _ => new SmuResult(SmuStatus.Failed, SmuFailure.NoMailboxForFamily, $"{Family}"),
         };
     }

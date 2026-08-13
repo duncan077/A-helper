@@ -35,6 +35,20 @@ public sealed class AppSettings
     /// <summary>Key number to match, or 0xFF to match any key for the function.</summary>
     public byte NitroKeyNumber { get; set; } = 0xFF;
 
+    /// <summary>
+    /// Keyboard scan code of the Nitro key, for models where it is an ordinary
+    /// HID key rather than a WMI event.
+    /// </summary>
+    /// <remarks>
+    /// ANV15-41 reports scan 0x75 extended with vk 0xFF - Windows has no virtual
+    /// key for it at all, which is why the scan code is the field to match on.
+    /// Set to 0 to disable keyboard-based triggering.
+    /// </remarks>
+    public uint NitroKeyScanCode { get; set; } = 0x75;
+
+    /// <summary>Whether the scan code above is an extended (E0-prefixed) key.</summary>
+    public bool NitroKeyExtended { get; set; } = true;
+
     public static AppSettings Load()
     {
         var settings = new AppSettings();
@@ -68,6 +82,10 @@ public sealed class AppSettings
                         settings.NitroKeyFunction = fn; break;
                     case nameof(NitroKeyNumber) when TryParseByte(value, out var kn):
                         settings.NitroKeyNumber = kn; break;
+                    case nameof(NitroKeyScanCode) when TryParseUInt(value, out var sc):
+                        settings.NitroKeyScanCode = sc; break;
+                    case nameof(NitroKeyExtended) when bool.TryParse(value, out var ext):
+                        settings.NitroKeyExtended = ext; break;
                 }
             }
         }
@@ -82,12 +100,17 @@ public sealed class AppSettings
     /// <summary>Accepts both decimal and 0x-prefixed hex, since these are event IDs.</summary>
     private static bool TryParseByte(string value, out byte result)
     {
+        result = 0;
+        return TryParseUInt(value, out var wide) && wide <= byte.MaxValue && (result = (byte)wide) == wide;
+    }
+
+    private static bool TryParseUInt(string value, out uint result)
+    {
         value = value.Trim();
 
-        if (value.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
-            return byte.TryParse(value[2..], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out result);
-
-        return byte.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out result);
+        return value.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
+            ? uint.TryParse(value[2..], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out result)
+            : uint.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out result);
     }
 
     public void Save()
@@ -107,6 +130,11 @@ public sealed class AppSettings
                 "# NitroKeyNumber=0xFF matches any key for that function.",
                 string.Create(CultureInfo.InvariantCulture, $"{nameof(NitroKeyFunction)}=0x{NitroKeyFunction:X2}"),
                 string.Create(CultureInfo.InvariantCulture, $"{nameof(NitroKeyNumber)}=0x{NitroKeyNumber:X2}"),
+                "",
+                "# Keyboard fallback, for models where the Nitro key is a plain HID key.",
+                "# ANV15-41 reports scan 0x75 extended. Set the scan code to 0 to disable.",
+                string.Create(CultureInfo.InvariantCulture, $"{nameof(NitroKeyScanCode)}=0x{NitroKeyScanCode:X2}"),
+                string.Create(CultureInfo.InvariantCulture, $"{nameof(NitroKeyExtended)}={NitroKeyExtended}"),
             };
 
             File.WriteAllLines(FilePath, lines);

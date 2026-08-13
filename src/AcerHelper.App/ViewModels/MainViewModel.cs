@@ -18,6 +18,7 @@ using System.Runtime.CompilerServices;
 using System.Windows.Input;
 using AcerHelper.Hardware;
 using AcerHelper.Hardware.Amd;
+using AcerHelper.Hardware.Input;
 using AcerHelper.Hardware.Nvidia;
 using Avalonia.Threading;
 
@@ -65,6 +66,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         ResetGpuOffsetsCommand = new RelayCommand(_ => _ = ResetGpuOffsetsAsync(), _ => GpuAvailable);
         ApplyCurveCommand = new RelayCommand(_ => _ = ApplyCurveAsync(), _ => SmuAvailable);
         ResetCurveCommand = new RelayCommand(_ => _ = ResetCurveAsync(), _ => SmuAvailable);
+        ApplyCpuPowerCommand = new RelayCommand(_ => _ = ApplyCpuPowerAsync(), _ => SmuAvailable);
 
         LoadRefreshRates();
         InitialiseTuning();
@@ -180,6 +182,29 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private double _curveOffset;
     public double CurveOffset { get => _curveOffset; set => Set(ref _curveOffset, value); }
+
+    private bool _gpuPowerAdjustable;
+    public bool GpuPowerAdjustable { get => _gpuPowerAdjustable; private set => Set(ref _gpuPowerAdjustable, value); }
+
+    private string _gpuPowerRange = "not exposed";
+    public string GpuPowerRange { get => _gpuPowerRange; private set => Set(ref _gpuPowerRange, value); }
+
+    private double _gpuPowerLimit = 100;
+    public double GpuPowerLimit { get => _gpuPowerLimit; set => Set(ref _gpuPowerLimit, value); }
+
+    private double _gpuPowerMin = 50;
+    public double GpuPowerMin { get => _gpuPowerMin; private set => Set(ref _gpuPowerMin, value); }
+
+    private double _gpuPowerMax = 100;
+    public double GpuPowerMax { get => _gpuPowerMax; private set => Set(ref _gpuPowerMax, value); }
+
+    private double _cpuPowerLimit = 35;
+    public double CpuPowerLimit { get => _cpuPowerLimit; set => Set(ref _cpuPowerLimit, value); }
+
+    private double _cpuTempLimit = 90;
+    public double CpuTempLimit { get => _cpuTempLimit; set => Set(ref _cpuTempLimit, value); }
+
+    public ICommand ApplyCpuPowerCommand { get; private set; } = null!;
 
     public ICommand ApplyGpuOffsetsCommand { get; private set; } = null!;
     public ICommand ResetGpuOffsetsCommand { get; private set; } = null!;
@@ -500,7 +525,27 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                     : $"core {core.MinMhz}..{core.MaxMhz} MHz"
                       + (memory is null ? "" : $", memory {memory.MinMhz}..{memory.MaxMhz} MHz");
 
-                Diagnostics.Write($"nvapi: {GpuName}, editable={GpuAvailable}, {GpuOffsetRange}");
+                var power = _nvApi.GetPowerLimitInfo(0);
+                if (power is { IsAdjustable: true })
+                {
+                    GpuPowerAdjustable = true;
+                    GpuPowerMin = power.MinPercent;
+                    GpuPowerMax = power.MaxPercent;
+                    _gpuPowerLimit = _nvApi.GetPowerLimit(0) ?? power.DefaultPercent;
+                    OnPropertyChanged(nameof(GpuPowerLimit));
+                    GpuPowerRange = $"{power.MinPercent}..{power.MaxPercent}% "
+                                    + $"(default {power.DefaultPercent}%)";
+                }
+                else
+                {
+                    // Laptop boards frequently pin all three values together.
+                    GpuPowerRange = power is null
+                        ? "not exposed by the driver"
+                        : $"locked at {power.DefaultPercent}%";
+                }
+
+                Diagnostics.Write($"nvapi: {GpuName}, editable={GpuAvailable}, {GpuOffsetRange}, "
+                                  + $"power {GpuPowerRange}");
             }
             else
             {
@@ -551,14 +596,18 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         try
         {
+            var power = GpuPowerAdjustable ? (int)GpuPowerLimit : (int?)null;
+
             await Task.Run(() =>
             {
                 _nvApi!.SetClockOffset(0, NvClockDomain.Graphics, core * 1000);
                 _nvApi.SetClockOffset(0, NvClockDomain.Memory, memory * 1000);
+                if (power is { } p) _nvApi.SetPowerLimit(0, p);
             });
 
-            Status = $"GPU offsets applied: core {core:+#;-#;0} MHz, memory {memory:+#;-#;0} MHz";
-            Diagnostics.Write($"gpu offsets: core={core} mem={memory}");
+            Status = $"GPU applied: core {core:+#;-#;0} MHz, memory {memory:+#;-#;0} MHz"
+                     + (power is { } w ? $", power {w}%" : "");
+            Diagnostics.Write($"gpu: core={core} mem={memory} power={power?.ToString() ?? "n/a"}");
         }
         catch (Exception ex)
         {
@@ -608,6 +657,30 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
+    private async Task ApplyCpuPowerAsync()
+    {
+        var watts = (int)CpuPowerLimit;
+        var celsius = (int)CpuTempLimit;
+
+        try
+        {
+            var (power, thermal) = await Task.Run(() =>
+                (_smu!.SetSustainedPowerLimit(watts), _smu.SetTemperatureLimit(celsius)));
+
+            Status = power.IsOk && thermal.IsOk
+                ? $"CPU limits applied: {watts} W, {celsius} °C"
+                : $"CPU limits: power {(power.IsOk ? "ok" : power.ToString())}, "
+                  + $"thermal {(thermal.IsOk ? "ok" : thermal.ToString())}";
+
+            Diagnostics.Write($"cpu power={watts}W -> {power}; temp={celsius}C -> {thermal}");
+        }
+        catch (Exception ex)
+        {
+            Status = $"CPU limits failed - {Diagnostics.Describe(ex)}";
+            Diagnostics.WriteException("cpu power", ex);
+        }
+    }
+
     private async Task ResetCurveAsync()
     {
         try
@@ -649,11 +722,50 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
             _eventWatcher = watcher;
             Diagnostics.Write("event watcher started");
+
+            StartKeyboardHook();
         }
         catch (Exception ex)
         {
             // Hotkeys are a convenience; losing them must not break the app.
             Diagnostics.WriteException("event watcher start", ex);
+        }
+    }
+
+    /// <summary>
+    /// Watches the raw keyboard for the Nitro key.
+    ///
+    /// Needed because on ANV15-41 the key is not a WMI event at all: it reports
+    /// scan 0x75 extended with virtual key 0xFF, meaning Windows has no virtual
+    /// key for it. The scan code is therefore the only reliable thing to match.
+    /// </summary>
+    private void StartKeyboardHook()
+    {
+        if (_settings.NitroKeyScanCode == 0) return;
+
+        try
+        {
+            if (!KeyboardHook.Start())
+            {
+                Diagnostics.Write("keyboard hook could not be installed");
+                return;
+            }
+
+            KeyboardHook.KeyPressed += stroke =>
+            {
+                if (stroke.ScanCode != _settings.NitroKeyScanCode) return;
+                if (stroke.IsExtended != _settings.NitroKeyExtended) return;
+
+                Diagnostics.Write($"nitro key: {stroke}");
+                _ = CycleProfileAsync();
+            };
+
+            Diagnostics.Write($"keyboard hook watching scan 0x{_settings.NitroKeyScanCode:X2}"
+                              + (_settings.NitroKeyExtended ? " extended" : ""));
+        }
+        catch (Exception ex)
+        {
+            Diagnostics.WriteException("keyboard hook", ex);
         }
     }
 
@@ -954,6 +1066,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         // before tearing down COM avoids a call landing on a released proxy.
         _eventWatcher?.Dispose();
 
+        // A live low-level hook outliving the process would wedge input.
+        try { KeyboardHook.Stop(); } catch (Exception ex) { Diagnostics.WriteException("hook stop", ex); }
+
         // Disposal must also happen on the dispatcher thread - releasing the
         // fan guard writes to the EC to restore Auto.
         try
@@ -989,4 +1104,5 @@ public sealed class RelayCommand(Action<object?> execute, Func<object?, bool>? c
 
     public void RaiseCanExecuteChanged() => CanExecuteChanged?.Invoke(this, EventArgs.Empty);
 }
+
 
