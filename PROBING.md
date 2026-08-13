@@ -144,6 +144,55 @@ Acer-specific, or that match battery / charge / power / thermal.
 
 ---
 
+## Step 6 — everything else
+
+These need no Acer hardware and no elevation, so they work anywhere:
+
+```bash
+AcerHelper.Probe.exe --gpu          # NVIDIA clock offsets and power limit
+AcerHelper.Probe.exe --cpu          # CPU identification and PawnIO discovery
+```
+
+`--gpu` reports whether each clock domain is `editable` or `LOCKED`, and whether
+the power limit is `adjustable` or locked. Laptop boards frequently lock the
+power target — that is a real answer, not a failure.
+
+```bash
+AcerHelper.Probe.exe --events       # live APGeEvent stream
+AcerHelper.Probe.exe --learn-nitro  # identify the profile-cycle key
+```
+
+`--learn-nitro` watches **both** WMI events and the raw keyboard. On ANV15-41 the
+Nitro key is not a WMI event at all — it is an ordinary HID key reporting scan
+`0x75` extended — so if nothing appears on the WMI side, look at the keystroke
+line instead. It prints the config lines to paste.
+
+```bash
+AcerHelper.Probe.exe --dump-acpi    # extract the firmware's own ACPI tables
+```
+
+This is how the interface is understood at source. It writes every table to an
+`acpi\` folder and prints which one carries each WMI GUID and the control method
+behind it. Note it reads tables **from the registry** as well as the firmware
+API, because `GetSystemFirmwareTable` returns only the first table for a
+duplicated signature and hides the rest — on ANV15-41 the gaming interface lives
+in `SSD8`, which the API never returns.
+
+Decompile with [ACPICA's `iasl`](https://github.com/acpica/acpica/releases):
+
+```bash
+iasl -d acpi\SSD8.aml
+```
+
+SMU flags, only meaningful with PawnIO installed:
+
+```bash
+AcerHelper.Probe.exe --smu          # validation probe, read-only
+AcerHelper.Probe.exe --find-pawnio  # locate PawnIO if the usual paths miss
+```
+
+---
+
 ## Writing tests (these change your machine)
 
 Only after the read-only steps. All are reversible.
@@ -153,6 +202,10 @@ AcerHelper.Probe.exe --test-profile     # cycles profiles, restores the original
 AcerHelper.Probe.exe --test-fans        # manual duty under a watchdog
 AcerHelper.Probe.exe --health-on        # enables the 80% charge cap
 AcerHelper.Probe.exe --health-off       # disables it
+AcerHelper.Probe.exe --gpu-core=-100    # GPU offset in MHz, cleared by a reboot
+AcerHelper.Probe.exe --overdrive-on     # display overdrive; a no-op on ANV15-41
+AcerHelper.Probe.exe --smu-co=-10       # Curve Optimizer offset, needs PawnIO
+AcerHelper.Probe.exe --smu-reset        # clear it
 ```
 
 `--test-fans` puts the fans under software control. A watchdog reverts to Auto

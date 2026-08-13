@@ -31,36 +31,78 @@ but capability sets differ per model. Run the probe first.
 
 ### Feature matrix
 
+Everything marked ✅ was confirmed on real hardware, not merely compiled.
+
 | Feature | Status | Notes |
 |---|---|---|
-| Thermal profiles | ✅ verified | Quiet, Balanced, Performance, Eco |
-| Manual fan duty | ✅ verified | Real RPM response; 40 % → 2767 rpm, 60 % → 3878 rpm |
-| CoolBoost | ✅ verified | `FanMode.Turbo` on both fans |
-| Live sensors | ✅ verified | CPU temp, system temp, both fan RPMs |
-| Battery 80 % cap | ✅ verified | Separate `BatteryControl` device |
-| Battery calibration | ⚠️ available | Deliberately gated — multi-hour discharge cycle |
-| Keyboard backlight | ⚠️ partial | Single-zone; read works, write untested |
+| Thermal profiles | ✅ | Quiet, Balanced, Performance, Eco — round-tripped |
+| Manual fan duty | ✅ | Real RPM response: 40 % → 2767 rpm, 60 % → 3878 rpm |
+| Fan curves, per profile | ✅ | Independent CPU and GPU curves, graphical editor |
+| CoolBoost | ✅ | `FanMode.Turbo` on both fans |
+| Live sensors | ✅ | CPU temp, system temp, both fan RPMs, GPU temp |
+| Battery 80 % cap | ✅ | Separate `BatteryControl` device |
+| USB-C vs barrel charger | ✅ | From the AC adapter event's key number |
+| Nitro key | ✅ | Scan `0x75` extended — a HID key, not a WMI event |
+| GPU clock offsets | ✅ | RTX 3050: core ±1000 MHz, memory −1000…+3000 MHz |
+| Windows power mode / plan | ✅ | Overlay, plan, max processor state, boost |
+| Screen refresh rate | ✅ | Pure Win32, independent of the Acer interface |
+| Start with Windows | ✅ | Scheduled task, elevated, no UAC prompt |
+| Battery calibration | ⚠️ | Firmware supports it; deliberately not exposed |
+| Keyboard backlight | ⚠️ | Single-zone; read works, write untested |
+| AMD Curve Optimizer | ⚠️ | Implemented and mailbox-validated, but **not used by the app** |
+| GPU power limit | ❌ | Vendor-locked on this laptop; reported as locked |
 | Turbo profile | ❌ | Not offered by this firmware (Predator tier) |
-| CPU overclocking | ❌ | `OC_1` absent, `OC_2` returns `0xFF` |
+| CPU overclocking (ACPI) | ❌ | `OC_1` absent, `OC_2` returns `0xFF` |
 | RGB keyboard | ❌ | No RGB hardware on the R6NM variant |
 | GPU MUX switching | ❌ | No MUX method exists in the interface at all |
-| **Charger bypass** | ❌ | **Not implemented in firmware** — see below |
+| Display overdrive | ❌ | `SetGamingProfile` is a **no-op** on this model |
+| Charger bypass | ❌ | `uFunctionList = 0x03` — not implemented in firmware |
 
 ### Application features
 
-- System tray icon with profile submenu, CoolBoost toggle and a live tooltip
-  (current profile, CPU temperature, power source)
-- Close-to-tray, so the poll loop and any engaged fan guard keep running
-- **Automatic profile switching on AC / battery**, applied only on a power
-  source *transition* — a manual profile choice is never overridden a second
-  later
-- **Fn / Nitro key handling** via the `APGeEvent` WMI event class — the Nitro key
-  cycles thermal profiles
-- **Screen refresh rate** switching at the current resolution (pure Win32, works
-  regardless of the Acer interface)
-- **Display overdrive** toggle — encoding unverified on ANV15-41, see below
-- Settings persist to `acerhelper.conf` beside the executable
-- Failures are logged to `acerhelper.log` with HRESULTs decoded to names
+- **System tray** with profile submenu, CoolBoost toggle and a live tooltip
+  (profile, CPU temperature, power source). Close-to-tray keeps the poll loop
+  and any engaged fan guard running.
+- **Graphical fan curve editor**, six bands from 40 to 90 °C, separate CPU and
+  GPU curves stored per thermal profile. 0 % stops the fan, as the EC itself
+  does at idle.
+- **Automatic profile switching** on AC / battery and on USB-C, applied only on
+  a *transition* so a manual choice is never overridden a second later.
+- **Per-profile settings** — Windows power plan, maximum processor state, boost
+  mode and fan curves, with separate power plans while on a USB-C charger.
+- **Windows power management** — power mode overlay, power plan, turbo boost
+  toggle, maximum processor state. No kernel driver, and it survives a reboot.
+- **Nitro key** bound through a low-level keyboard hook, since on this model it
+  is an ordinary HID key rather than a WMI event.
+- **Start with Windows** via a scheduled task with highest privileges, launching
+  straight to the tray.
+- Settings persist to `acerhelper.conf`; failures land in `acerhelper.log` with
+  HRESULTs decoded to names.
+
+### Configuration
+
+`acerhelper.conf` sits beside the executable and is written with a commented
+example. Per-profile keys are keyed by **name**, because Acer's profile values
+(`Quiet=0, Balanced=1, Performance=4, Eco=6`) do not match the numbering other
+tools use:
+
+```ini
+AutoSwitchEnabled=True
+AcProfile=Performance
+BatteryProfile=Eco
+usbc_profile=Eco
+
+scheme_Performance=8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
+scheme_usbc_Performance=381b4222-f694-41f0-9685-ff5bb260df2e
+maxproc_Quiet=70
+boost_Quiet=0
+fancurve_Performance=40:30,50:40,60:55,70:75,80:90,90:100
+fancurve_gpu_Performance=40:30,50:40,60:60,70:80,80:95,90:100
+```
+
+Well-known Windows plan GUIDs: Balanced `381b4222-f694-41f0-9685-ff5bb260df2e`,
+High Performance `8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c`, Ultimate Performance
+`e9a42b02-d5df-448d-aa00-03f14749eb61`.
 
 ---
 
@@ -239,12 +281,17 @@ as an 8-byte array named `EventDetail`:
 Findings that contradict or extend `acer-wmi.c`:
 
 - **Function `0x07` is never emitted.** Nothing on ANV15-41 produces the
-  documented gaming/Turbo key event, so anything bound to it will never fire.
-  The Nitro key is a dedicated key, not an Fn combination, and sends something
-  else. Because that differs per model, the profile-cycle binding is **not**
-  hard-coded: `AcerHelper.Probe.exe --learn-nitro` captures the press and prints
-  the `NitroKeyFunction` / `NitroKeyNumber` lines for `acerhelper.conf`.
-  `NitroKeyNumber=0xFF` matches any key for that function.
+  documented gaming/Turbo key event. The Nitro key is not a WMI event at all —
+  it is an ordinary HID key reporting **scan `0x75` extended with virtual key
+  `0xFF`**, meaning Windows has no virtual key for it, so the scan code is the
+  only reliable field to match. It is bound through a low-level keyboard hook,
+  configurable via `NitroKeyScanCode` / `NitroKeyExtended`, and discoverable
+  with `AcerHelper.Probe.exe --learn-nitro`, which watches both WMI and the
+  keyboard.
+- **The AC adapter event's key number identifies the charger type**, which
+  `acer-wmi.c` never decodes: `0x00` unplugged, `0x01` barrel adapter,
+  **`0x04` USB-C PD charger**. This is what drives USB-C profile switching, and
+  it needs no configuration.
 - **Function `0x02`** is undocumented. Observed with `key_num = 1`.
 - **Function `0x09`** is undocumented and fires immediately after `0x08`
   (AC adapter) with the same key number — `0` unplugged, `1` plugged — so it
@@ -320,7 +367,24 @@ the pstate table. Getting that wrong returns
 `NVAPI_INCOMPATIBLE_STRUCT_VERSION` (-9). The code tries V2 then falls back to
 V1, since older drivers reject V2 outright rather than negotiating.
 
-### AMD Curve Optimizer undervolting
+### GPU power limit
+
+`ClientPowerPolicies{GetInfo,GetStatus,SetStatus}`. Limits are thousandths of a
+percent, and within an entry the three sit **12 bytes apart** — `pstate@0`,
+`min@12`, `def@24`, `max@36`. Verified on an RTX 4080: 100 % current, 46…140 %
+range, 100 % default.
+
+**Laptop boards commonly lock it.** When min, default and max are identical the
+GPU reports as locked and no slider is offered, which is the case on the
+ANV15-41's RTX 3050.
+
+### AMD Curve Optimizer undervolting — implemented, not used
+
+> The app does **not** drive this. It requires a kernel driver, the GPU power
+> target is vendor-locked, and the CPU has no ACPI power interface, so it bought
+> nothing on this hardware — Windows power management replaced it. The code and
+> the probe's `--smu` flags remain because the findings are worth keeping for
+> models where the trade is better.
 
 `Amd/CpuInfo.cs` identifies the CPU via `X86Base.CpuId` (an intrinsic: no
 driver, no elevation, AOT-safe) and maps family/model to an SMU codename.
@@ -387,7 +451,7 @@ AcerHelper.Probe.exe --smu-reset    # clear it
 
 ## Implementation notes
 
-Two problems cost real time; both are documented in the source.
+Four traps cost real time; all are documented in the source.
 
 **`System.Management` cannot be used under Native AOT.** It instantiates types
 by reflection, so the trimmer removes them and you get
@@ -404,9 +468,41 @@ window renders and every read silently returns nothing.
 `AcerHardwareDispatcher` owns one dedicated MTA thread for the channel's entire
 lifetime, disposal included.
 
+**`NvAPIWrapper.Net` cannot be used under Native AOT either** — same failure
+class. It resolves every entry point through `NvAPI_QueryInterface` and
+`Marshal.GetDelegateForFunctionPointer`, and AOT cannot generate marshalling
+stubs for delegates it never sees statically. It throws
+`NotSupportedException: 'NvAPI_Initialize' is missing delegate marshalling data`.
+`Nvidia/NvApi.cs` resolves ordinals and calls through
+`delegate* unmanaged[Cdecl]` instead.
+
+**PawnIO is not on any DLL search path.** `PawnIOLib.dll` installs to
+`C:\Program Files\PawnIO`, so a plain `[LibraryImport("PawnIOLib")]` throws
+`DllNotFoundException` even where PawnIO is correctly installed.
+`PawnIoLocator` finds it via the registry and registers a `DllImportResolver`
+from a static constructor — not a `[ModuleInitializer]`, which `CA2255` rightly
+flags for a library.
+
 One more, worth knowing when reading probe output: WMI has no VARIANT for
 `uint64`, so it carries those as `BSTR` decimal strings. Passing `VT_I8` to a
 `CIM_UINT64` parameter is rejected.
+
+### Windows power management
+
+`WindowsPower.cs` wraps `powrprof` for the power-mode overlay (the Windows 11
+slider), power plans, maximum processor state (`PROCTHROTTLEMAX`) and boost mode
+(`PERFBOOSTMODE`). A written processor value is **inert until the plan is
+re-activated**, so every setter re-applies the active plan rather than trusting
+the write. These settings are per-plan, so switching plans re-reads them.
+
+### Start with Windows
+
+A scheduled task, not a `Run` registry key. The manifest requests
+`requireAdministrator`, and Windows will not silently elevate a `Run` entry — it
+prompts on every logon. `schtasks /RL HIGHEST` starts elevated without
+prompting, and the task passes `--minimised` so a boot launch goes to the tray.
+Task existence is the source of truth, so deleting it in Task Scheduler is
+reflected in the UI.
 
 ### Safety
 
