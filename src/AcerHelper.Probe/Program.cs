@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Console harness for the AcerHelper hardware layer.
 //
@@ -14,6 +14,7 @@
 using AcerHelper.Hardware;
 using AcerHelper.Hardware.Amd;
 using AcerHelper.Hardware.Input;
+using AcerHelper.Hardware.Interop;
 using AcerHelper.Hardware.Nvidia;
 
 // GPU probing needs no Acer hardware and no elevation, so it runs before the
@@ -55,6 +56,53 @@ if (args.Contains("--cpu"))
         Console.WriteLine();
         Console.WriteLine("If PawnIO IS installed, run with --find-pawnio to search the disk.");
     }
+    return 0;
+}
+
+// Dumps the firmware's own ACPI tables. Read-only, no elevation, no vendor
+// software involved - this is where the WMI methods are actually implemented.
+if (args.Contains("--dump-acpi"))
+{
+    var directory = Path.Combine(AppContext.BaseDirectory, "acpi");
+
+    Console.WriteLine("ACPI tables present:");
+    Console.WriteLine("  " + string.Join(" ", AcpiTables.Enumerate()));
+    Console.WriteLine();
+
+    var written = AcpiTables.DumpAll(directory);
+    if (written.Count == 0)
+    {
+        Console.Error.WriteLine("Could not read any ACPI table.");
+        return 2;
+    }
+
+    foreach (var (signature, path, bytes) in written)
+        Console.WriteLine($"  {signature,-6} {bytes,8:N0} bytes  ->  {path}");
+
+    // Locate the control methods behind the gaming interface so the decompiled
+    // output can be searched directly rather than read end to end.
+    var dsdt = AcpiTables.Read("DSDT");
+    if (dsdt is not null)
+    {
+        var gaming = new Guid("7A4DDFE7-5B5D-40B4-8595-4408E0CC7F56");
+        var battery = new Guid("79772EC5-04B1-4BFD-843C-61E7F77B6CC9");
+
+        Console.WriteLine();
+        Console.WriteLine("Control methods behind the WMI interfaces (from _WDG):");
+        foreach (var name in AcpiTables.FindWmiMethodNames(dsdt, gaming))
+            Console.WriteLine($"  AcerGamingFunction -> {name}");
+        foreach (var name in AcpiTables.FindWmiMethodNames(dsdt, battery))
+            Console.WriteLine($"  BatteryControl     -> {name}");
+    }
+
+    Console.WriteLine();
+    Console.WriteLine("Decompile with the ACPI compiler (part of the ACPICA tools):");
+    Console.WriteLine($"    iasl -d \"{Path.Combine(directory, "DSDT.aml")}\"");
+    Console.WriteLine();
+    Console.WriteLine("Then open DSDT.dsl and find the control method named above.");
+    Console.WriteLine("SetGamingFanTable is WMI method 18, so look for how that");
+    Console.WriteLine("method dispatches on its index argument - the case for 18");
+    Console.WriteLine("shows exactly what the fan table input must contain.");
     return 0;
 }
 
