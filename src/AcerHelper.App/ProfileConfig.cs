@@ -12,7 +12,8 @@
 //   scheme_usbc_<Profile>   plan used instead while on a USB-C charger
 //   maxproc_<Profile>       maximum processor state, percent
 //   boost_<Profile>         processor boost mode, 0-6
-//   fancurve_<Profile>      temp:duty pairs, e.g. 50:30,60:45,70:60,80:80
+//   fancurve_<Profile>      CPU fan curve, temp:duty pairs
+//   fancurve_gpu_<Profile>  GPU fan curve, same format
 //
 // Anything omitted is simply not applied, so a profile can control only the
 // parts you care about.
@@ -32,19 +33,30 @@ public sealed class ProfileSettings
     public Guid? UsbcPowerPlan { get; set; }
     public int? MaxProcessorState { get; set; }
     public ProcessorBoostMode? Boost { get; set; }
+
+    /// <summary>CPU fan curve. Null means the EC keeps control.</summary>
     public IReadOnlyList<FanCurvePoint>? FanCurve { get; set; }
+
+    /// <summary>GPU fan curve, kept separate because the two fans sit on
+    /// different thermal loads and G-Helper's users expect independent control.</summary>
+    public IReadOnlyList<FanCurvePoint>? GpuFanCurve { get; set; }
 
     public bool IsEmpty => PowerPlan is null && UsbcPowerPlan is null
                            && MaxProcessorState is null && Boost is null
-                           && (FanCurve is null || FanCurve.Count == 0);
+                           && (FanCurve is null || FanCurve.Count == 0)
+                           && (GpuFanCurve is null || GpuFanCurve.Count == 0);
 
     /// <summary>
     /// Duty for a temperature, linearly interpolated between points. Returns
     /// null when no curve is configured.
     /// </summary>
-    public byte? DutyFor(int temperatureC)
+    public byte? DutyFor(int temperatureC) => DutyFor(FanCurve, temperatureC);
+
+    public byte? GpuDutyFor(int temperatureC) => DutyFor(GpuFanCurve, temperatureC);
+
+    private static byte? DutyFor(IReadOnlyList<FanCurvePoint>? curve, int temperatureC)
     {
-        if (FanCurve is not { Count: > 0 } curve) return null;
+        if (curve is not { Count: > 0 }) return null;
 
         // Points are kept sorted at parse time.
         if (temperatureC <= curve[0].TemperatureC) return curve[0].DutyPercent;
@@ -154,6 +166,7 @@ public sealed class ProfileConfig
             if (uint.TryParse(v, NumberStyles.Integer, CultureInfo.InvariantCulture, out var b) && b <= 6)
                 s.Boost = (ProcessorBoostMode)b;
         }),
+        ("fancurve_gpu_", static (s, v) => s.GpuFanCurve = ParseCurve(v)),
         ("fancurve_", static (s, v) => s.FanCurve = ParseCurve(v)),
     ];
 
@@ -175,9 +188,10 @@ public sealed class ProfileConfig
             if (!int.TryParse(parts[1].Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var duty))
                 continue;
 
-            // The floor matches AcerFanGuard's: below it the fans can stall.
-            points.Add(new FanCurvePoint(Math.Clamp(temp, 0, 110),
-                                         (byte)Math.Clamp(duty, 30, 100)));
+            // 0 is legal and means the fan stops - the EC does this itself at
+            // idle. Only 1..29 is the stall band, so those lift to 30.
+            var clamped = duty <= 0 ? 0 : Math.Clamp(duty, 30, 100);
+            points.Add(new FanCurvePoint(Math.Clamp(temp, 0, 110), (byte)clamped));
         }
 
         if (points.Count == 0) return null;
@@ -187,13 +201,21 @@ public sealed class ProfileConfig
     }
 
     /// <summary>Stores a fan curve for a profile, replacing any existing one.</summary>
-    public void SetFanCurve(ThermalProfile profile, IReadOnlyList<FanCurvePoint> points)
-        => Ensure(profile).FanCurve = points.Count == 0 ? null : points;
+    public void SetFanCurve(ThermalProfile profile, IReadOnlyList<FanCurvePoint> cpu,
+                            IReadOnlyList<FanCurvePoint> gpu)
+    {
+        var settings = Ensure(profile);
+        settings.FanCurve = cpu.Count == 0 ? null : cpu;
+        settings.GpuFanCurve = gpu.Count == 0 ? null : gpu;
+    }
 
-    /// <summary>Removes a profile's fan curve.</summary>
+    /// <summary>Removes a profile's fan curves.</summary>
     public void ClearFanCurve(ThermalProfile profile)
     {
-        if (_profiles.TryGetValue(profile, out var settings)) settings.FanCurve = null;
+        if (!_profiles.TryGetValue(profile, out var settings)) return;
+
+        settings.FanCurve = null;
+        settings.GpuFanCurve = null;
     }
 
     /// <summary>Renders the current configuration back out, for the sample file.</summary>
@@ -208,6 +230,9 @@ public sealed class ProfileConfig
             if (s.FanCurve is { Count: > 0 } curve)
                 yield return $"fancurve_{profile}=" +
                              string.Join(",", curve.Select(p => $"{p.TemperatureC}:{p.DutyPercent}"));
+            if (s.GpuFanCurve is { Count: > 0 } gpu)
+                yield return $"fancurve_gpu_{profile}=" +
+                             string.Join(",", gpu.Select(p => $"{p.TemperatureC}:{p.DutyPercent}"));
         }
     }
 }

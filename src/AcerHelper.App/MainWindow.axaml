@@ -3,6 +3,7 @@
         xmlns:vm="using:AcerHelper.App.ViewModels"
         xmlns:hw="using:AcerHelper.Hardware"
         xmlns:local="using:AcerHelper.App"
+        xmlns:ctl="using:AcerHelper.App.Controls"
         x:Class="AcerHelper.App.MainWindow"
         x:DataType="vm:MainViewModel"
         Title="AcerHelper"
@@ -142,30 +143,24 @@
                             SelectedItem="{Binding CurveProfile, Mode=TwoWay}" />
                 </Grid>
 
-                <ItemsControl ItemsSource="{Binding FanCurveRows}">
-                  <ItemsControl.ItemTemplate>
-                    <DataTemplate x:DataType="local:FanCurveRow">
-                      <Grid ColumnDefinitions="46,*,44" Margin="0,1">
-                        <TextBlock Grid.Column="0" Text="{Binding Label}"
-                                   FontSize="11" Opacity="0.7" VerticalAlignment="Center" />
-                        <Slider Grid.Column="1" Minimum="30" Maximum="100" TickFrequency="5"
-                                Value="{Binding Duty, Mode=TwoWay}" />
-                        <TextBlock Grid.Column="2" FontSize="11" Opacity="0.7"
-                                   VerticalAlignment="Center" HorizontalAlignment="Right"
-                                   Text="{Binding Duty, StringFormat={}{0:F0}%}" />
-                      </Grid>
-                    </DataTemplate>
-                  </ItemsControl.ItemTemplate>
-                </ItemsControl>
+                <TextBlock Classes="label" Text="CPU fan — drag the points" Margin="0,0,0,2" />
+                <ctl:FanCurveEditor Points="{Binding FanCurveRows}"
+                                    CurrentTemperature="{Binding CurveMarkerTemp}"
+                                    Height="150" Margin="0,0,0,10" />
+
+                <TextBlock Classes="label" Text="GPU fan" Margin="0,0,0,2" />
+                <ctl:FanCurveEditor Points="{Binding GpuFanCurveRows}"
+                                    CurrentTemperature="{Binding CurveMarkerTemp}"
+                                    Height="150" />
 
                 <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
-                  <Button Content="Save curve" Command="{Binding SaveFanCurveCommand}"
+                  <Button Content="Save curves" Command="{Binding SaveFanCurveCommand}"
                           Padding="12,6" Margin="0,0,6,0" />
                   <Button Content="Clear" Command="{Binding ClearFanCurveCommand}" Padding="12,6" />
                 </StackPanel>
 
                 <TextBlock Classes="label" Margin="0,6,0,0" TextWrapping="Wrap"
-                           Text="Duty is interpolated between bands and applied while that profile is active. The 30% floor and the watchdog still apply." />
+                           Text="Each profile stores its own pair of curves. 0% stops the fan, as the EC itself does at idle; 1–29% cannot be programmed so it snaps to off or 30%. The dashed line marks the current CPU temperature." />
               </StackPanel>
             </Border>
 

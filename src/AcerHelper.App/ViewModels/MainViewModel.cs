@@ -49,7 +49,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     // Per-profile state: the curve currently driving the fans, the last duty it
     // programmed, and whether a USB-C charger was seen at the last apply.
     private IReadOnlyList<FanCurvePoint>? _activeFanCurve;
+    private IReadOnlyList<FanCurvePoint>? _activeGpuCurve;
     private int _lastCurveDuty = -1;
+    private int _lastGpuCurveDuty = -1;
 
     // Adapter type is reported by AC adapter events, which only fire on change,
     // so it stays null until one is seen rather than assuming a type at startup.
@@ -186,6 +188,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// selection changes, so each profile keeps its own curve.
     /// </summary>
     public ObservableCollection<FanCurveRow> FanCurveRows { get; } = [];
+
+    /// <summary>GPU curve, edited independently of the CPU one.</summary>
+    public ObservableCollection<FanCurveRow> GpuFanCurveRows { get; } = [];
+
+    /// <summary>Live CPU temperature, drawn as a marker on the editor.</summary>
+    private int? _curveMarkerTemp;
+    public int? CurveMarkerTemp { get => _curveMarkerTemp; private set => Set(ref _curveMarkerTemp, value); }
 
     private ThermalProfile _curveProfile = ThermalProfile.Balanced;
     public ThermalProfile CurveProfile
@@ -559,7 +568,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 });
 
                 if (s.sensors.CpuTemperatureC is { } curveTemp)
-                    await ApplyFanCurveAsync(curveTemp).ConfigureAwait(false);
+                {
+                    await Dispatcher.UIThread.InvokeAsync(() => CurveMarkerTemp = curveTemp);
+                    await ApplyFanCurveAsync(curveTemp, s.sensors.GpuTemperatureC).ConfigureAwait(false);
+                }
             }
             catch (OperationCanceledException) { return; }
             catch (Exception ex)
@@ -994,7 +1006,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             applied.Add($"boost {boost}");
 
         _activeFanCurve = settings.FanCurve;
-        if (_activeFanCurve is { Count: > 0 }) applied.Add($"fan curve ({_activeFanCurve.Count} points)");
+        _activeGpuCurve = settings.GpuFanCurve;
+        if (_activeFanCurve is { Count: > 0 } || _activeGpuCurve is { Count: > 0 })
+            applied.Add("fan curve");
 
         if (applied.Count > 0)
         {
@@ -1013,35 +1027,65 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         var stored = _settings.Profiles.For(profile);
 
         FanCurveRows.Clear();
+        GpuFanCurveRows.Clear();
+
         foreach (var band in ProfileConfig.EditorBands)
         {
-            // DutyFor interpolates, so a stored curve with different bands still
-            // maps cleanly onto the editor's.
-            var duty = stored.DutyFor(band) ?? DefaultDutyFor(band);
-            FanCurveRows.Add(new FanCurveRow(band, duty));
+            // DutyFor interpolates, so a stored curve using different bands
+            // still maps cleanly onto the editor bands.
+            FanCurveRows.Add(new FanCurveRow(band, stored.DutyFor(band) ?? DefaultDutyFor(profile, band)));
+            GpuFanCurveRows.Add(new FanCurveRow(band, stored.GpuDutyFor(band) ?? DefaultDutyFor(profile, band)));
         }
 
-        CurveEnabled = stored.FanCurve is { Count: > 0 };
+        CurveEnabled = stored.FanCurve is { Count: > 0 } || stored.GpuFanCurve is { Count: > 0 };
     }
 
-    /// <summary>A gentle ramp from the 30% floor, used when nothing is stored.</summary>
-    private static byte DefaultDutyFor(int temperatureC) => temperatureC switch
+    /// <summary>
+    /// Starting curve when a profile has none stored.
+    ///
+    /// The BIOS fan table cannot be READ on this hardware - GetGamingFanTable
+    /// returns a non-zero status - so these are shaped to resemble each profile's
+    /// stock behaviour rather than actually read from it. Quiet and Eco start
+    /// with the fans OFF, which is what the EC itself does at idle.
+    /// </summary>
+    private static byte DefaultDutyFor(ThermalProfile profile, int temperatureC) => profile switch
     {
-        <= 40 => 30,
-        <= 50 => 35,
-        <= 60 => 45,
-        <= 70 => 60,
-        <= 80 => 80,
-        _ => 100,
+        ThermalProfile.Quiet or ThermalProfile.Eco => temperatureC switch
+        {
+            <= 50 => 0,
+            <= 60 => 30,
+            <= 70 => 40,
+            <= 80 => 60,
+            _ => 85,
+        },
+
+        ThermalProfile.Performance or ThermalProfile.Turbo => temperatureC switch
+        {
+            <= 40 => 30,
+            <= 50 => 40,
+            <= 60 => 55,
+            <= 70 => 75,
+            <= 80 => 90,
+            _ => 100,
+        },
+
+        _ => temperatureC switch
+        {
+            <= 40 => 0,
+            <= 50 => 30,
+            <= 60 => 45,
+            <= 70 => 60,
+            <= 80 => 80,
+            _ => 100,
+        },
     };
 
     private void SaveFanCurve()
     {
-        var points = FanCurveRows
-            .Select(r => new FanCurvePoint(r.TemperatureC, (byte)Math.Clamp(r.Duty, 30, 100)))
-            .ToList();
+        var cpu = ToPoints(FanCurveRows);
+        var gpu = ToPoints(GpuFanCurveRows);
 
-        _settings.Profiles.SetFanCurve(CurveProfile, points);
+        _settings.Profiles.SetFanCurve(CurveProfile, cpu, gpu);
         _settings.Save();
 
         CurveEnabled = true;
@@ -1049,18 +1093,28 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         // Only takes effect immediately if it is the profile in use.
         if (CurveProfile == CurrentProfile)
         {
-            _activeFanCurve = points;
+            _activeFanCurve = cpu;
+            _activeGpuCurve = gpu;
             _lastCurveDuty = -1;
-            Status = $"Fan curve saved and active for {CurveProfile}";
+            _lastGpuCurveDuty = -1;
+            Status = $"Fan curves saved and active for {CurveProfile}";
         }
         else
         {
-            Status = $"Fan curve saved for {CurveProfile} (applies when that profile is selected)";
+            Status = $"Fan curves saved for {CurveProfile} (apply when it is selected)";
         }
 
-        Diagnostics.Write($"fan curve {CurveProfile}: "
-                          + string.Join(",", points.Select(p => $"{p.TemperatureC}:{p.DutyPercent}")));
+        Diagnostics.Write($"fan curve {CurveProfile} cpu: "
+                          + string.Join(",", cpu.Select(p => $"{p.TemperatureC}:{p.DutyPercent}")));
     }
+
+    /// <summary>0 stays 0 (fans off); 1-29 is the stall band and lifts to 30.</summary>
+    private static List<FanCurvePoint> ToPoints(IEnumerable<FanCurveRow> rows) =>
+        [.. rows.Select(r =>
+        {
+            var duty = (int)Math.Round(r.Duty);
+            return new FanCurvePoint(r.TemperatureC, (byte)(duty <= 0 ? 0 : Math.Clamp(duty, 30, 100)));
+        })];
 
     private void ClearFanCurve()
     {
@@ -1072,7 +1126,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         if (CurveProfile == CurrentProfile)
         {
             _activeFanCurve = null;
+            _activeGpuCurve = null;
             _lastCurveDuty = -1;
+            _lastGpuCurveDuty = -1;
 
             // Hand the fans back to the EC rather than leaving them at whatever
             // duty the curve last programmed.
@@ -1088,25 +1144,35 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// Drives the active fan curve. Runs from the poll loop, so the curve is
     /// re-evaluated at the same cadence sensors are read.
     /// </summary>
-    private async Task ApplyFanCurveAsync(int temperatureC)
+    private async Task ApplyFanCurveAsync(int cpuTemperatureC, int? gpuTemperatureC)
     {
-        if (_activeFanCurve is not { Count: > 0 }) return;
+        if (_activeFanCurve is not { Count: > 0 } && _activeGpuCurve is not { Count: > 0 }) return;
 
         var settings = _settings.Profiles.For(CurrentProfile);
-        if (settings.DutyFor(temperatureC) is not { } duty) return;
+        var cpuDuty = settings.DutyFor(cpuTemperatureC);
+
+        // A sleeping dGPU reports 0 C, which would drive the GPU fan to the
+        // bottom of its curve. Fall back to CPU temperature in that case.
+        var gpuReference = gpuTemperatureC is > 0 ? gpuTemperatureC.Value : cpuTemperatureC;
+        var gpuDuty = settings.GpuDutyFor(gpuReference);
+
+        var cpuChanged = cpuDuty is { } c && c != _lastCurveDuty;
+        var gpuChanged = gpuDuty is { } g && g != _lastGpuCurveDuty;
 
         // Only act on a real change; rewriting the same duty every second is
         // pointless EC traffic.
-        if (_lastCurveDuty == duty) return;
-        _lastCurveDuty = duty;
+        if (!cpuChanged && !gpuChanged) return;
+
+        if (cpuDuty is { } cd) _lastCurveDuty = cd;
+        if (gpuDuty is { } gd) _lastGpuCurveDuty = gd;
 
         try
         {
             await _hw.InvokeAsync(() =>
             {
                 _fanGuard ??= AcerFanGuard.Engage(_wmi!);
-                _fanGuard.SetDuty(FanId.Cpu, duty);
-                _fanGuard.SetDuty(FanId.Gpu, duty);
+                if (cpuDuty is { } c2) _fanGuard.SetDuty(FanId.Cpu, c2);
+                if (gpuDuty is { } g2) _fanGuard.SetDuty(FanId.Gpu, g2);
             });
 
             await Dispatcher.UIThread.InvokeAsync(() => CustomFanEnabled = true);
@@ -1115,6 +1181,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             Diagnostics.WriteException("fan curve", ex);
             _activeFanCurve = null;   // stop retrying a curve that cannot be applied
+            _activeGpuCurve = null;
         }
     }
 

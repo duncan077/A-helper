@@ -21,8 +21,22 @@ namespace AcerHelper.Hardware;
 
 public sealed record AcerFanGuardOptions
 {
-    /// <summary>Lowest duty the guard will program. Below this fans can stall.</summary>
+    /// <summary>
+    /// Lowest NON-ZERO duty the guard will program. Between 1 and this value a
+    /// fan may be commanded to spin but not have enough drive to actually turn,
+    /// so those values are lifted to the floor.
+    /// </summary>
+    /// <remarks>
+    /// Zero is explicitly allowed and means "fan off". The EC does this itself -
+    /// an idle ANV15-41 in Quiet reports 0 rpm - so forcing a floor on every
+    /// value would make a custom curve noisier than stock at idle, which is the
+    /// opposite of what a quiet profile is for. The temperature ceiling still
+    /// guards against a curve that leaves the fans off for too long.
+    /// </remarks>
     public byte MinimumDutyPercent { get; init; } = 25;
+
+    /// <summary>Whether a duty of 0 (fans stopped) may be programmed.</summary>
+    public bool AllowFansOff { get; init; } = true;
 
     /// <summary>Any monitored temperature at or above this reverts to Auto.</summary>
     public int MaxTemperatureC { get; init; } = 92;
@@ -115,7 +129,12 @@ public sealed class AcerFanGuard : IDisposable
                 throw new InvalidOperationException(
                     "Guard is not engaged - fans have reverted to Auto.");
 
-            var clamped = Math.Clamp(percent, _options.MinimumDutyPercent, (byte)100);
+            // 0 passes through as "off"; anything else is lifted clear of the
+            // stall band. See AcerFanGuardOptions.MinimumDutyPercent.
+            var clamped = percent == 0 && _options.AllowFansOff
+                ? (byte)0
+                : Math.Clamp(percent, _options.MinimumDutyPercent, (byte)100);
+
             _wmi.SetFanDuty(fan, clamped);
             _lastHeartbeatTicks = Environment.TickCount64;
         }
