@@ -31,6 +31,12 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private AcerBatteryWmi? _battery;
     private AcerFanGuard? _fanGuard;
 
+    private readonly AppSettings _settings = AppSettings.Load();
+
+    // Auto-switching acts on TRANSITIONS only. Reapplying on every poll would
+    // silently undo a manual profile change a second after the user made it.
+    private PowerSource _lastPowerSource = PowerSource.Unknown;
+
     private bool _disposed;
 
     public MainViewModel()
@@ -121,6 +127,67 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private string _designCapacity = "--";
     public string DesignCapacity { get => _designCapacity; private set => Set(ref _designCapacity, value); }
+
+    // -------------------------------------------------- power auto-switching
+
+    private string _powerSourceText = "--";
+    public string PowerSourceText { get => _powerSourceText; private set => Set(ref _powerSourceText, value); }
+
+    public bool AutoSwitchEnabled
+    {
+        get => _settings.AutoSwitchEnabled;
+        set
+        {
+            if (_settings.AutoSwitchEnabled == value) return;
+            _settings.AutoSwitchEnabled = value;
+            _settings.Save();
+            OnPropertyChanged();
+
+            // Apply immediately on enable so the setting visibly takes effect
+            // instead of waiting for the next plug/unplug.
+            if (value) _ = ApplyProfileForPowerAsync(_lastPowerSource, "auto-switch enabled");
+        }
+    }
+
+    public ThermalProfile AcProfile
+    {
+        get => _settings.AcProfile;
+        set
+        {
+            if (_settings.AcProfile == value) return;
+            _settings.AcProfile = value;
+            _settings.Save();
+            OnPropertyChanged();
+            if (AutoSwitchEnabled && _lastPowerSource == PowerSource.AC)
+                _ = ApplyProfileForPowerAsync(PowerSource.AC, "AC profile changed");
+        }
+    }
+
+    public ThermalProfile BatteryProfile
+    {
+        get => _settings.BatteryProfile;
+        set
+        {
+            if (_settings.BatteryProfile == value) return;
+            _settings.BatteryProfile = value;
+            _settings.Save();
+            OnPropertyChanged();
+            if (AutoSwitchEnabled && _lastPowerSource == PowerSource.Battery)
+                _ = ApplyProfileForPowerAsync(PowerSource.Battery, "battery profile changed");
+        }
+    }
+
+    public bool MinimiseToTray
+    {
+        get => _settings.MinimiseToTray;
+        set
+        {
+            if (_settings.MinimiseToTray == value) return;
+            _settings.MinimiseToTray = value;
+            _settings.Save();
+            OnPropertyChanged();
+        }
+    }
 
     // -------------------------------------------------------------- status
 
@@ -235,8 +302,32 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
                 consecutiveErrors = 0;
 
+                // Cheap kernel call, safe from any thread - no WMI involved.
+                var power = SystemPower.GetSource();
+                var batteryPercent = SystemPower.GetBatteryPercent();
+
+                if (power != _lastPowerSource)
+                {
+                    var previous = _lastPowerSource;
+                    _lastPowerSource = power;
+                    Diagnostics.Write($"power source {previous} -> {power}");
+
+                    // Do not act on the very first reading: applying a profile at
+                    // startup would override whatever the user last chose.
+                    if (AutoSwitchEnabled && previous != PowerSource.Unknown)
+                        await ApplyProfileForPowerAsync(power, $"switched to {power}")
+                            .ConfigureAwait(false);
+                }
+
                 await Dispatcher.UIThread.InvokeAsync(() =>
                 {
+                    PowerSourceText = power switch
+                    {
+                        PowerSource.AC => batteryPercent is { } p ? $"AC ({p}%)" : "AC",
+                        PowerSource.Battery => batteryPercent is { } p ? $"Battery ({p}%)" : "Battery",
+                        _ => "unknown",
+                    };
+
                     var r = s.sensors;
                     CpuTemp = r.CpuTemperatureC is { } ct ? $"{ct} °C" : "--";
                     CpuFan = r.CpuFanRpm is { } cf ? $"{cf} rpm" : "--";
@@ -280,6 +371,47 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                     return;
                 }
             }
+        }
+    }
+
+    /// <summary>
+    /// Applies the profile configured for a power source. Silently does nothing
+    /// if that profile is not one the firmware advertises, rather than throwing
+    /// on a value the user picked before we knew the capability set.
+    /// </summary>
+    private async Task ApplyProfileForPowerAsync(PowerSource source, string reason)
+    {
+        if (!IsHardwareAvailable) return;
+
+        var target = source switch
+        {
+            PowerSource.AC => AcProfile,
+            PowerSource.Battery => BatteryProfile,
+            _ => (ThermalProfile?)null,
+        };
+
+        if (target is not { } profile) return;
+
+        if (SupportedProfiles.Count > 0 && !SupportedProfiles.Contains(profile))
+        {
+            Diagnostics.Write($"auto-switch skipped: {profile} not supported by this firmware");
+            await Dispatcher.UIThread.InvokeAsync(() =>
+                Status = $"Auto-switch skipped - {profile} is not supported");
+            return;
+        }
+
+        try
+        {
+            await _hw.InvokeAsync(() => _wmi!.SetThermalProfile(profile));
+            Diagnostics.Write($"auto-switch: {profile} ({reason})");
+            await Dispatcher.UIThread.InvokeAsync(() =>
+                Status = $"Auto-switched to {profile} ({reason})");
+        }
+        catch (Exception ex)
+        {
+            Diagnostics.WriteException("auto-switch", ex);
+            await Dispatcher.UIThread.InvokeAsync(() =>
+                Status = $"Auto-switch failed - {Diagnostics.Describe(ex)}");
         }
     }
 

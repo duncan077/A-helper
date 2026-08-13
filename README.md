@@ -46,6 +46,17 @@ but capability sets differ per model. Run the probe first.
 | GPU MUX switching | ❌ | No MUX method exists in the interface at all |
 | **Charger bypass** | ❌ | **Not implemented in firmware** — see below |
 
+### Application features
+
+- System tray icon with profile submenu, CoolBoost toggle and a live tooltip
+  (current profile, CPU temperature, power source)
+- Close-to-tray, so the poll loop and any engaged fan guard keep running
+- **Automatic profile switching on AC / battery**, applied only on a power
+  source *transition* — a manual profile choice is never overridden a second
+  later
+- Settings persist to `acerhelper.conf` beside the executable
+- Failures are logged to `acerhelper.log` with HRESULTs decoded to names
+
 ---
 
 ## Protocol

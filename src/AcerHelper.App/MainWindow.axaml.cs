@@ -9,19 +9,27 @@ public partial class MainWindow : Window
 {
     private readonly MainViewModel _viewModel;
 
-    public MainWindow()
+    // Parameterless constructor exists only for the XAML previewer.
+    public MainWindow() : this(new MainViewModel()) { }
+
+    public MainWindow(MainViewModel viewModel)
     {
         InitializeComponent();
 
-        _viewModel = new MainViewModel();
-        DataContext = _viewModel;
+        _viewModel = viewModel;
+        DataContext = viewModel;
     }
 
-    protected override void OnClosed(EventArgs e)
+    protected override void OnClosing(WindowClosingEventArgs e)
     {
-        // Disposing the view model releases the fan guard, which returns the
-        // fans to EC control. Skipping this would leave them in Custom mode.
-        _viewModel.Dispose();
-        base.OnClosed(e);
+        // Hide rather than close, so the poll loop and any engaged fan guard
+        // keep running. App.ShutdownRequested performs the real teardown.
+        if (_viewModel.MinimiseToTray && !e.IsProgrammatic)
+        {
+            e.Cancel = true;
+            Hide();
+        }
+
+        base.OnClosing(e);
     }
 }

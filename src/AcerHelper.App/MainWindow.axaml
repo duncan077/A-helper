@@ -148,6 +148,47 @@
           </StackPanel>
         </Border>
 
+        <!-- Power auto-switching -->
+        <Border Classes="card">
+          <StackPanel>
+            <TextBlock Classes="heading" Text="POWER" />
+
+            <StackPanel Margin="0,0,0,12">
+              <TextBlock Classes="label" Text="Power source" />
+              <TextBlock Classes="metric" Text="{Binding PowerSourceText}" />
+            </StackPanel>
+
+            <CheckBox IsChecked="{Binding AutoSwitchEnabled, Mode=TwoWay}"
+                      Content="Switch profile automatically" />
+
+            <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto"
+                  Margin="0,10,0,0"
+                  IsEnabled="{Binding AutoSwitchEnabled}">
+
+              <TextBlock Grid.Row="0" Grid.Column="0" Text="On AC"
+                         VerticalAlignment="Center" Margin="0,0,10,6" FontSize="12" />
+              <ComboBox Grid.Row="0" Grid.Column="1" Margin="0,0,0,6"
+                        HorizontalAlignment="Stretch"
+                        ItemsSource="{Binding SupportedProfiles}"
+                        SelectedItem="{Binding AcProfile, Mode=TwoWay}" />
+
+              <TextBlock Grid.Row="1" Grid.Column="0" Text="On battery"
+                         VerticalAlignment="Center" Margin="0,0,10,0" FontSize="12" />
+              <ComboBox Grid.Row="1" Grid.Column="1"
+                        HorizontalAlignment="Stretch"
+                        ItemsSource="{Binding SupportedProfiles}"
+                        SelectedItem="{Binding BatteryProfile, Mode=TwoWay}" />
+            </Grid>
+
+            <TextBlock Classes="label" Margin="0,8,0,0" TextWrapping="Wrap"
+                       Text="Applies only when the power source changes, so a manual profile choice is never overridden a second later." />
+
+            <CheckBox IsChecked="{Binding MinimiseToTray, Mode=TwoWay}"
+                      Content="Close to tray instead of exiting"
+                      Margin="0,10,0,0" />
+          </StackPanel>
+        </Border>
+
         <!-- Battery -->
         <Border Classes="card">
           <StackPanel>

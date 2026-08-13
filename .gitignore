@@ -8,6 +8,7 @@ dist/
 
 # Runtime artefacts
 acerhelper.log
+acerhelper.conf
 *-report.txt
 *-report-v2.txt
 acer-wmi-full-dump.txt
