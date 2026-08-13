@@ -212,6 +212,61 @@ All of it needs elevation.
 
 ---
 
+## GPU and CPU tuning
+
+### NVIDIA clock offsets
+
+Implemented in `Nvidia/NvApi.cs` against `nvapi64.dll` directly.
+
+**NvAPIWrapper.Net cannot be used under Native AOT.** It resolves every entry
+point through `NvAPI_QueryInterface` + `Marshal.GetDelegateForFunctionPointer`,
+and AOT cannot generate marshalling stubs for delegates it never sees
+statically. Publishing warns `IL2104` / `IL3053`, and at runtime it throws
+`NotSupportedException: 'NvAPI_Initialize' is missing delegate marshalling
+data`. So entry points are resolved by ordinal and called through
+`delegate* unmanaged[Cdecl]`.
+
+Verified on an RTX 4080:
+
+```
+Graphics   offset 0 MHz   range -1000..1000 MHz   editable
+Memory     offset 0 MHz   range -1000..3000 MHz   editable
+```
+
+Offsets apply to pstate 0 and are **not persisted by the driver** — a reboot
+clears them, which makes them safe to experiment with. Ranges are read from the
+driver, so an out-of-range value is refused rather than applied.
+
+One gotcha: `NV_GPU_PERF_PSTATES20_INFO_V2` is **7416** bytes, not 7316 — V2
+appends an over-voltage block (`numVoltages` plus four voltage entries) after
+the pstate table. Getting that wrong returns
+`NVAPI_INCOMPATIBLE_STRUCT_VERSION` (-9). The code tries V2 then falls back to
+V1, since older drivers reject V2 outright rather than negotiating.
+
+### AMD undervolting — not implemented
+
+`Amd/CpuInfo.cs` identifies the CPU via `X86Base.CpuId` (an intrinsic: no
+driver, no elevation, AOT-safe) and maps family/model to an SMU codename. That
+establishes *whether* undervolting is possible, without touching ring 0.
+
+Applying an undervolt is a different matter. G-Helper does it in
+`app/Pawn/RyzenSmu.cs` through **PawnIO**, a signed kernel driver, using
+`SetCoAll` / `SetCoGfx`. That requires:
+
+- installing a third-party kernel driver
+- writing to SMU mailboxes, where a wrong address can hang the machine
+- accepting that Curve Optimizer instability often only appears under load
+
+Note the asymmetry with ASUS: G-Helper gets PPT/SPL/SPPT limits from ASUS's own
+ACPI interface and uses PawnIO only for undervolt and temperature limits. The
+ANV15-41 has **no** ACPI power-limit interface at all — `OC_1` is absent and
+`OC_2` returns `0xFF` — so on this machine *every* CPU tuning knob would have to
+go through the SMU. That makes it a larger dependency for a smaller payoff.
+
+`AcerHelper.Probe.exe --cpu` reports the codename and whether PawnIO is present.
+
+---
+
 ## Implementation notes
 
 Two problems cost real time; both are documented in the source.

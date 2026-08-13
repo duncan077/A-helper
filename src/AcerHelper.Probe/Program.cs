@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+﻿// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Console harness for the AcerHelper hardware layer.
 //
@@ -12,6 +12,33 @@
 // to Auto even if this process is killed mid-test.
 
 using AcerHelper.Hardware;
+using AcerHelper.Hardware.Amd;
+using AcerHelper.Hardware.Nvidia;
+
+// GPU probing needs no Acer hardware and no elevation, so it runs before the
+// elevation gate and works on any machine with an NVIDIA driver.
+if (args.Contains("--gpu") || args.Any(a => a.StartsWith("--gpu-core=", StringComparison.Ordinal))
+                           || args.Any(a => a.StartsWith("--gpu-mem=", StringComparison.Ordinal)))
+{
+    return Gpu(args);
+}
+
+// CPU identification is CPUID only - no driver, no elevation.
+if (args.Contains("--cpu"))
+{
+    var id = CpuInfo.Identify();
+    Console.WriteLine($"Brand      : {id.BrandString}");
+    Console.WriteLine($"Vendor     : {id.Vendor}");
+    Console.WriteLine($"Family     : 0x{id.Family:X2}  Model: 0x{id.Model:X2}  Stepping: {id.Stepping}");
+    Console.WriteLine($"Codename   : {id.Codename}");
+    Console.WriteLine();
+    Console.WriteLine($"Curve Optimizer plausible : {id.SupportsCurveOptimizer}");
+    Console.WriteLine($"PawnIO driver installed   : {CpuInfo.IsPawnIoInstalled()}");
+    Console.WriteLine();
+    Console.WriteLine("Undervolting needs BOTH: a supported codename and the PawnIO driver.");
+    Console.WriteLine("Nothing was written - this is identification only.");
+    return 0;
+}
 
 // Does System.Management's COM layer survive Native AOT at all? This path needs
 // no elevation and no Acer hardware, so it isolates the interop question.
@@ -142,6 +169,93 @@ using (wmi)
 }
 
 return 0;
+
+/// <summary>
+/// Reads and optionally sets NVIDIA clock offsets.
+///
+/// Offsets apply to pstate 0 and are NOT persisted by the driver - a reboot
+/// clears them, which makes this safe to experiment with. Ranges come from the
+/// driver itself, so an out-of-range value is refused rather than applied.
+/// </summary>
+static int Gpu(string[] args)
+{
+    var nv = NvApi.TryOpen();
+    if (nv is null)
+    {
+        Console.WriteLine("NVAPI unavailable - no NVIDIA GPU, or the driver is not installed.");
+        return 2;
+    }
+
+    using (nv)
+    {
+        Console.WriteLine($"NVAPI initialised. {nv.GpuCount} GPU(s).");
+        Console.WriteLine();
+
+        for (var i = 0; i < nv.GpuCount; i++)
+        {
+            Console.WriteLine($"GPU {i}: {nv.GetGpuName(i)}");
+
+            IReadOnlyList<NvApi.ClockOffset> offsets;
+            try
+            {
+                offsets = nv.GetClockOffsets(i);
+            }
+            catch (NvApiException ex)
+            {
+                Console.WriteLine($"  GetPstates20 failed: status {ex.Status}");
+                continue;
+            }
+
+            if (offsets.Count == 0)
+            {
+                Console.WriteLine("  no editable clock domains reported");
+                continue;
+            }
+
+            foreach (var o in offsets)
+            {
+                Console.WriteLine($"  {o.Domain,-10} offset {o.CurrentMhz,+5} MHz   "
+                                  + $"range {o.MinMhz}..{o.MaxMhz} MHz   "
+                                  + (o.IsEditable ? "editable" : "LOCKED"));
+            }
+        }
+
+        var core = ParseOffset(args, "--gpu-core=");
+        var mem = ParseOffset(args, "--gpu-mem=");
+        if (core is null && mem is null) return 0;
+
+        Console.WriteLine();
+        if (core is { } c) Apply(nv, NvClockDomain.Graphics, c);
+        if (mem is { } m) Apply(nv, NvClockDomain.Memory, m);
+
+        Console.WriteLine();
+        Console.WriteLine("Offsets are not persisted by the driver; a reboot clears them.");
+    }
+
+    return 0;
+
+    static int? ParseOffset(string[] args, string prefix)
+    {
+        var arg = args.FirstOrDefault(a => a.StartsWith(prefix, StringComparison.Ordinal));
+        if (arg is null) return null;
+
+        return int.TryParse(arg[prefix.Length..], out var v) ? v : null;
+    }
+
+    static void Apply(NvApi nv, NvClockDomain domain, int mhz)
+    {
+        try
+        {
+            nv.SetClockOffset(0, domain, mhz * 1000);
+            var now = nv.GetClockOffsets(0).FirstOrDefault(o => o.Domain == domain);
+            Console.WriteLine($"  {domain} offset set to {mhz} MHz; reads back {now?.CurrentMhz} MHz");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"  {domain} offset failed - {ex.Message}");
+        }
+    }
+}
 
 static void Section(string title)
 {
@@ -472,3 +586,5 @@ static void TestFans(AcerGamingWmi wmi)
         Console.WriteLine($"GPU fan mode restored to: {wmi.GetFanMode(FanSelect.Gpu)}");
     }
 }
+
+
