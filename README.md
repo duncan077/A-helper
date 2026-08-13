@@ -132,7 +132,61 @@ Contributed here for anyone extending the upstream driver:
 - **Methods 18/19** (`Set/GetGamingFanTable`) exist in the BIOS but the getter
   returns status `1` on ANV15-41 — the table interface is not usable, so fan
   curves must be implemented in software via Custom mode plus periodic duty
-  writes.
+  writes. **The ACPI implementation cannot explain the format** — see below.
+
+### Why the fan table format cannot be recovered from firmware
+
+`AcerHelper.Probe.exe --dump-acpi` extracts the ACPI tables; on ANV15-41 the
+gaming interface lives in `SSD8`, not the DSDT, and `_WDG` maps the GUIDs to:
+
+| Interface | Control method |
+|---|---|
+| `AcerGamingFunction` | `WMBH` |
+| `BatteryControl` | `WMBE` |
+| `APGeAction` | `WMAA` |
+| `APGeEvent` | notify `0xBC` on `WMID` |
+
+`WMBH` dispatches on the WMI method id, and every case is a two-line shim:
+
+```asl
+Case (0x12)                    // method 18, SetGamingFanTable
+{
+    WSMI (Arg1, Arg2)
+    BHSK = WMIB
+    Return (BHSK)
+}
+
+Method (WSMI, 2, NotSerialized)
+{
+    MTID = Arg0                // method id
+    WMIB = Arg1                // argument buffer
+    WSSP = 0xD0                // raise SMI 0xD0
+}
+```
+
+ACPI stores the method id and the caller's buffer in shared memory and raises
+**SMI 0xD0**. Everything meaningful happens in the SMM handler, which lives in
+SMRAM — locked at boot and unreadable from the OS. So the firmware tables reveal
+the *transport* and nothing about the fan table *payload*, and no amount of ACPI
+decompilation will.
+
+Two observations suggest the table is not the mechanism anyway: `GetGamingFanTable`
+is rejected by that SMM handler, and `--watch` shows the CPU fan mode moving
+`Auto -> Custom` while NitroSense applies a curve — the same Custom-mode-plus-duty
+route this project and every other open-source implementation uses.
+
+### `_WDG` corroboration of the event layout
+
+The DSDT's own event constructors confirm the `APGeEvent` payload decoded here
+empirically:
+
+```asl
+Method (HKEV, 2) { WMID.FEBC[0] = Arg0; WMID.FEBC[1] = Arg1; Notify (WMID, 0xBC) }
+Method (HMEV, 1) { WMID.FEBC[2] = (Local0 & 0xFF); WMID.FEBC[3] = (Local1 & 0xFF) }
+```
+
+Byte 0 function, byte 1 key number, bytes 2–3 little-endian `device_state` —
+exactly as observed, now confirmed against firmware.
 - **Methods 24/25** (`Set/GetCPUOverclockingProfile`) are declared but reject
   input on this tier.
 - **`BatteryControl` methods 22/23** are absent from `acer-wmi-battery` entirely.
