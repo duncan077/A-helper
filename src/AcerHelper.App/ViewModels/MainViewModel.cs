@@ -595,9 +595,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             var result = await Task.Run(() => _smu!.SetCurveOptimizerAll(offset));
 
-            Status = result == SmuStatus.Ok
+            Status = result.IsOk
                 ? $"Curve Optimizer {offset} accepted - test under load before trusting it"
-                : $"SMU rejected the offset ({result})";
+                : $"Undervolt failed - {result}";
 
             Diagnostics.Write($"curve optimizer {offset} -> {result}");
         }

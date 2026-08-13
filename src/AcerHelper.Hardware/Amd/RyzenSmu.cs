@@ -36,6 +36,46 @@ public enum SmuStatus : uint
 }
 
 /// <summary>
+/// Where a mailbox transaction actually failed.
+///
+/// Exists because a bare SmuStatus.Failed collapses four very different causes -
+/// a rejected ioctl, a mailbox that never went idle, a mailbox that never
+/// answered, and a genuine SMU error code - into one word that says nothing
+/// about which. Diagnosing the Rembrandt MP1 path needed the distinction.
+/// </summary>
+public enum SmuFailure
+{
+    None,
+    NotUsable,
+    NoMailboxForFamily,
+    MutexTimeout,
+
+    /// <summary>The response register never became non-zero before we started.</summary>
+    IdleTimeout,
+
+    /// <summary>ioctl_write_smu_register was rejected by the driver.</summary>
+    RegisterWriteRejected,
+
+    /// <summary>ioctl_read_smu_register was rejected by the driver.</summary>
+    RegisterReadRejected,
+
+    /// <summary>Command written, but the SMU never produced a response.</summary>
+    ResponseTimeout,
+
+    /// <summary>The SMU answered with a non-OK status.</summary>
+    SmuError,
+}
+
+public sealed record SmuResult(SmuStatus Status, SmuFailure Failure, string Detail)
+{
+    public bool IsOk => Failure == SmuFailure.None && Status == SmuStatus.Ok;
+
+    public override string ToString() => IsOk
+        ? "OK"
+        : $"{Failure} ({Status}) - {Detail}";
+}
+
+/// <summary>
 /// SMU command routing family. Distinct from <see cref="RyzenCodename"/>:
 /// several codenames share one mailbox and command set.
 /// </summary>
@@ -165,9 +205,14 @@ public sealed class RyzenSmu : IDisposable
     /// Runs one mailbox transaction: clear response, write args, write command,
     /// poll for a non-zero response.
     /// </summary>
-    private SmuStatus Send(uint cmdAddr, uint rspAddr, uint argAddr, uint command, uint argument)
+    private SmuResult Send(uint cmdAddr, uint rspAddr, uint argAddr, uint command, uint argument)
     {
-        if (_disposed || cmdAddr == 0) return SmuStatus.Failed;
+        if (_disposed)
+            return new SmuResult(SmuStatus.Failed, SmuFailure.NotUsable, "disposed");
+
+        if (cmdAddr == 0)
+            return new SmuResult(SmuStatus.Failed, SmuFailure.NoMailboxForFamily,
+                                 $"no mailbox defined for {Family}");
 
         var held = false;
         try
@@ -175,18 +220,33 @@ public sealed class RyzenSmu : IDisposable
             try { held = _pciMutex?.WaitOne(5000) ?? true; }
             catch (AbandonedMutexException) { held = true; }   // previous owner died
 
-            if (!held) return SmuStatus.CmdRejectedBusy;
+            if (!held)
+                return new SmuResult(SmuStatus.CmdRejectedBusy, SmuFailure.MutexTimeout,
+                                     "another process holds Global\\Access_PCI");
 
-            // Refuse to start if a previous transaction never completed.
-            if (!WaitForIdle(rspAddr)) return SmuStatus.CmdRejectedBusy;
+            // A response register still reading zero means either a previous
+            // transaction never completed, or this is not a live mailbox.
+            if (!WaitForIdle(rspAddr, out var idleValue, out var readOk))
+            {
+                return readOk
+                    ? new SmuResult(SmuStatus.CmdRejectedBusy, SmuFailure.IdleTimeout,
+                        $"rsp 0x{rspAddr:X7} stayed 0 - mailbox may be wrong for this model")
+                    : new SmuResult(SmuStatus.Failed, SmuFailure.RegisterReadRejected,
+                        $"driver rejected a read of 0x{rspAddr:X7}");
+            }
 
-            if (!WriteRegister(rspAddr, 0)) return SmuStatus.Failed;
+            if (!WriteRegister(rspAddr, 0))
+                return new SmuResult(SmuStatus.Failed, SmuFailure.RegisterWriteRejected,
+                                     $"driver rejected a write to rsp 0x{rspAddr:X7}");
 
             for (var i = 0u; i < 6; i++)
                 if (!WriteRegister(argAddr + (i * 4), i == 0 ? argument : 0))
-                    return SmuStatus.Failed;
+                    return new SmuResult(SmuStatus.Failed, SmuFailure.RegisterWriteRejected,
+                                         $"driver rejected a write to arg 0x{argAddr + (i * 4):X7}");
 
-            if (!WriteRegister(cmdAddr, command)) return SmuStatus.Failed;
+            if (!WriteRegister(cmdAddr, command))
+                return new SmuResult(SmuStatus.Failed, SmuFailure.RegisterWriteRejected,
+                                     $"driver rejected a write to cmd 0x{cmdAddr:X7}");
 
             var deadline = Environment.TickCount64 + MailboxTimeoutMs;
             var spins = 0;
@@ -194,7 +254,10 @@ public sealed class RyzenSmu : IDisposable
 
             while (Environment.TickCount64 < deadline)
             {
-                if (!ReadRegister(rspAddr, out status)) return SmuStatus.Failed;
+                if (!ReadRegister(rspAddr, out status))
+                    return new SmuResult(SmuStatus.Failed, SmuFailure.RegisterReadRejected,
+                                         $"driver rejected a read of 0x{rspAddr:X7} while polling");
+
                 if (status != 0) break;
 
                 spins++;
@@ -202,7 +265,15 @@ public sealed class RyzenSmu : IDisposable
                 else if (spins > 32) Thread.Yield();
             }
 
-            return status == 0 ? SmuStatus.Failed : (SmuStatus)status;
+            if (status == 0)
+                return new SmuResult(SmuStatus.Failed, SmuFailure.ResponseTimeout,
+                    $"cmd 0x{command:X2} written to 0x{cmdAddr:X7} (idle was 0x{idleValue:X8}), "
+                    + $"no response within {MailboxTimeoutMs} ms");
+
+            return status == (uint)SmuStatus.Ok
+                ? new SmuResult(SmuStatus.Ok, SmuFailure.None, "accepted")
+                : new SmuResult((SmuStatus)status, SmuFailure.SmuError,
+                                $"SMU returned 0x{status:X2} for cmd 0x{command:X2}");
         }
         finally
         {
@@ -210,28 +281,60 @@ public sealed class RyzenSmu : IDisposable
         }
     }
 
-    private bool WaitForIdle(uint rspAddr)
+    private bool WaitForIdle(uint rspAddr, out uint lastValue, out bool readSucceeded)
     {
+        lastValue = 0;
+        readSucceeded = true;
+
         var deadline = Environment.TickCount64 + MailboxTimeoutMs;
         while (Environment.TickCount64 < deadline)
         {
-            if (!ReadRegister(rspAddr, out var value)) return false;
-            if (value != 0) return true;
+            if (!ReadRegister(rspAddr, out lastValue))
+            {
+                readSucceeded = false;
+                return false;
+            }
+
+            if (lastValue != 0) return true;
             Thread.Yield();
         }
+
         return false;
     }
 
-    private SmuStatus SendMp1(uint command, uint argument)
+    private SmuResult SendMp1(uint command, uint argument)
     {
         var (c, r, a) = Mp1();
         return Send(c, r, a, command, argument);
     }
 
-    private SmuStatus SendPsmu(uint command, uint argument)
+    private SmuResult SendPsmu(uint command, uint argument)
     {
         var (c, r, a) = Psmu();
         return Send(c, r, a, command, argument);
+    }
+
+    /// <summary>
+    /// Raw values of both mailboxes' registers, for diagnosing which one is live
+    /// on an untested model. Pure reads.
+    /// </summary>
+    public IReadOnlyList<(string Mailbox, string Register, uint Address, uint? Value)> ReadMailboxRegisters()
+    {
+        var result = new List<(string, string, uint, uint?)>();
+
+        foreach (var (name, addrs) in new[] { ("MP1", Mp1()), ("PSMU", Psmu()) })
+        {
+            foreach (var (reg, addr) in new[]
+                     {
+                         ("cmd", addrs.Cmd), ("rsp", addrs.Rsp), ("arg", addrs.Arg),
+                     })
+            {
+                if (addr == 0) { result.Add((name, reg, 0, null)); continue; }
+                result.Add((name, reg, addr, ReadRegister(addr, out var v) ? v : null));
+            }
+        }
+
+        return result;
     }
 
     // ------------------------------------------------------ public operations
@@ -251,9 +354,10 @@ public sealed class RyzenSmu : IDisposable
     /// not immediately. Callers should treat a successful return as "accepted",
     /// not as "stable".
     /// </remarks>
-    public SmuStatus SetCurveOptimizerAll(int offset)
+    public SmuResult SetCurveOptimizerAll(int offset)
     {
-        if (!IsUsable) return SmuStatus.Failed;
+        if (!IsUsable)
+            return new SmuResult(SmuStatus.Failed, SmuFailure.NotUsable, "SMU not validated");
 
         offset = Math.Clamp(offset, MinCurveOffset, MaxCurveOffset);
         var v = EncodeCurve(offset);
@@ -261,16 +365,22 @@ public sealed class RyzenSmu : IDisposable
         return Family switch
         {
             SmuFamily.Renoir => SendMp1(0x55, v),
-            SmuFamily.Mobile => SendMp1(0x4C, v),
+
+            // RyzenAdj/UXTU document MP1 0x4C here, but the RyzenSMU module's own
+            // table routes Rembrandt-class parts to the PSMU mailbox. Try MP1
+            // first and fall back rather than assuming either is universal.
+            SmuFamily.Mobile => FirstWorking(() => SendMp1(0x4C, v), () => SendPsmu(0x4C, v)),
+
             SmuFamily.Raphael => SendPsmu(0x07, v),
-            _ => SmuStatus.Failed,
+            _ => new SmuResult(SmuStatus.Failed, SmuFailure.NoMailboxForFamily, $"{Family}"),
         };
     }
 
     /// <summary>Applies a Curve Optimizer offset to the integrated GPU.</summary>
-    public SmuStatus SetCurveOptimizerGfx(int offset)
+    public SmuResult SetCurveOptimizerGfx(int offset)
     {
-        if (!IsUsable) return SmuStatus.Failed;
+        if (!IsUsable)
+            return new SmuResult(SmuStatus.Failed, SmuFailure.NotUsable, "SMU not validated");
 
         offset = Math.Clamp(offset, MinCurveOffset, MaxCurveOffset);
         var v = EncodeCurve(offset);
@@ -279,14 +389,15 @@ public sealed class RyzenSmu : IDisposable
         {
             SmuFamily.Renoir => SendMp1(0x64, v),
             SmuFamily.Mobile => SendPsmu(0xB7, v),
-            _ => SmuStatus.Failed,
+            _ => new SmuResult(SmuStatus.Failed, SmuFailure.NoMailboxForFamily, $"{Family}"),
         };
     }
 
     /// <summary>Sets the CPU temperature limit in degrees Celsius.</summary>
-    public SmuStatus SetTemperatureLimit(int celsius)
+    public SmuResult SetTemperatureLimit(int celsius)
     {
-        if (!IsUsable) return SmuStatus.Failed;
+        if (!IsUsable)
+            return new SmuResult(SmuStatus.Failed, SmuFailure.NotUsable, "SMU not validated");
 
         var v = (uint)Math.Clamp(celsius, 60, 100);
 
@@ -294,8 +405,27 @@ public sealed class RyzenSmu : IDisposable
         {
             SmuFamily.Renoir or SmuFamily.Mobile => SendMp1(0x19, v),
             SmuFamily.Raphael => SendMp1(0x3F, v),
-            _ => SmuStatus.Failed,
+            _ => new SmuResult(SmuStatus.Failed, SmuFailure.NoMailboxForFamily, $"{Family}"),
         };
+    }
+
+    /// <summary>
+    /// Runs alternatives until one is accepted. Only a mailbox that never
+    /// answered is worth retrying elsewhere - an explicit SMU error means the
+    /// mailbox works and the command was genuinely refused.
+    /// </summary>
+    private static SmuResult FirstWorking(params Func<SmuResult>[] attempts)
+    {
+        SmuResult last = new(SmuStatus.Failed, SmuFailure.NotUsable, "no attempts");
+
+        foreach (var attempt in attempts)
+        {
+            last = attempt();
+            if (last.IsOk) return last;
+            if (last.Failure is SmuFailure.SmuError or SmuFailure.RegisterWriteRejected) return last;
+        }
+
+        return last;
     }
 
     /// <summary>

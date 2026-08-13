@@ -13,6 +13,7 @@
 
 using AcerHelper.Hardware;
 using AcerHelper.Hardware.Amd;
+using AcerHelper.Hardware.Input;
 using AcerHelper.Hardware.Nvidia;
 
 // GPU probing needs no Acer hardware and no elevation, so it runs before the
@@ -142,6 +143,19 @@ if (args.Contains("--smu") || args.Any(a => a.StartsWith("--smu-co=", StringComp
         Console.WriteLine();
         Console.WriteLine("Validation probe passed - the mailbox answered read-only calls.");
 
+        Console.WriteLine();
+        Console.WriteLine("Mailbox registers (raw reads):");
+        foreach (var (mailbox, register, address, value) in smu.ReadMailboxRegisters())
+        {
+            Console.WriteLine(address == 0
+                ? $"  {mailbox,-5} {register,-4} not defined for this family"
+                : $"  {mailbox,-5} {register,-4} 0x{address:X7} = "
+                  + (value is { } v ? $"0x{v:X8}" : "<read rejected>"));
+        }
+        Console.WriteLine();
+        Console.WriteLine("A response register reading 0x00000000 means that mailbox has never");
+        Console.WriteLine("completed a transaction - usually the wrong one for this model.");
+
         if (args.Contains("--smu-reset"))
         {
             smu.ResetCurveOptimizer();
@@ -167,13 +181,27 @@ if (args.Contains("--smu") || args.Any(a => a.StartsWith("--smu-co=", StringComp
         Console.WriteLine();
         Console.WriteLine($"Applying all-core Curve Optimizer offset {offset}...");
         var result = smu.SetCurveOptimizerAll(offset);
-        Console.WriteLine($"  SMU status: {result}");
+        Console.WriteLine($"  result: {result}");
         Console.WriteLine();
-        Console.WriteLine(result == SmuStatus.Ok
+
+        Console.WriteLine(result.IsOk
             ? "Accepted. NOTE: acceptance is not stability - instability from an\n"
               + "aggressive offset usually appears only under sustained load.\n"
               + "Test with a stress run, and reboot or --smu-reset to revert."
-            : "Rejected. Nothing was applied.");
+            : result.Failure switch
+            {
+                SmuFailure.ResponseTimeout =>
+                    "The mailbox accepted the writes but never answered, which usually\n"
+                    + "means the wrong mailbox for this model. Compare the register dump\n"
+                    + "above: a response register stuck at 0 is the giveaway.",
+                SmuFailure.SmuError =>
+                    "The mailbox works and the SMU explicitly refused the command.\n"
+                    + "The command ID is likely wrong for this silicon.",
+                SmuFailure.RegisterWriteRejected =>
+                    "The PawnIO module refused a register write - the address is outside\n"
+                    + "the range its policy permits.",
+                _ => "Nothing was applied.",
+            });
     }
 
     return 0;
@@ -520,9 +548,34 @@ static void WatchEvents()
 /// </summary>
 static void LearnNitroKey()
 {
+    Console.WriteLine("Watching BOTH sources: APGeEvent (WMI) and the raw keyboard.");
+    Console.WriteLine("The Nitro key may be either - on ANV15-41 it is an ordinary HID");
+    Console.WriteLine("key that types '@', so it never appears as a WMI event.");
+    Console.WriteLine();
     Console.WriteLine("Press the Nitro key ONCE, and nothing else.");
     Console.WriteLine("Waiting up to 30 seconds. Ctrl+C to abort.");
     Console.WriteLine();
+
+    var strokes = new List<KeyStroke>();
+    if (KeyboardHook.Start())
+    {
+        KeyboardHook.KeyPressed += stroke =>
+        {
+            lock (strokes) strokes.Add(stroke);
+            Console.WriteLine($"  keyboard  {stroke}");
+        };
+    }
+    else
+    {
+        Console.WriteLine("  (keyboard hook could not be installed; WMI only)");
+    }
+
+    try { LearnFromEvents(strokes); }
+    finally { KeyboardHook.Stop(); }
+}
+
+static void LearnFromEvents(List<KeyStroke> strokes)
+{
 
     using var watcher = AcerEventWatcher.Start();
     var captured = new List<AcerHotkeyEvent>();
@@ -547,11 +600,38 @@ static void LearnNitroKey()
     lock (captured) events = [.. captured];
 
     Console.WriteLine();
+
+    List<KeyStroke> keystrokes;
+    lock (strokes) keystrokes = [.. strokes];
+
     if (events.Count == 0)
     {
-        Console.WriteLine("Nothing captured. Either the key was not pressed, or Acer's");
-        Console.WriteLine("driver consumes it before it reaches WMI - in which case it");
-        Console.WriteLine("cannot be used as a trigger at all.");
+        if (keystrokes.Count == 0)
+        {
+            Console.WriteLine("Nothing captured from either source. Either the key was not");
+            Console.WriteLine("pressed, or Acer's driver swallows it entirely.");
+            return;
+        }
+
+        Console.WriteLine($"No WMI event, but {keystrokes.Count} keystroke(s) seen.");
+        Console.WriteLine("The Nitro key is a plain keyboard key on this model.");
+        Console.WriteLine();
+
+        // A single press can emit modifiers plus the key; the last non-modifier
+        // stroke is the one that identifies it.
+        var key = keystrokes.LastOrDefault(s => s.VirtualKey is not (0x10 or 0x11 or 0x12 or 0xA0
+                                                                     or 0xA1 or 0xA2 or 0xA3 or 0xA4 or 0xA5));
+
+        Console.WriteLine("Full sequence:");
+        foreach (var s in keystrokes) Console.WriteLine($"    {s}");
+        Console.WriteLine();
+        Console.WriteLine("Add these lines to acerhelper.conf:");
+        Console.WriteLine();
+        Console.WriteLine($"    NitroKeyVirtual=0x{key.VirtualKey:X2}");
+        Console.WriteLine($"    NitroKeyScanCode=0x{key.ScanCode:X2}");
+        Console.WriteLine();
+        Console.WriteLine("Scan code is the reliable field - the virtual key may collide");
+        Console.WriteLine("with a character you type normally.");
         return;
     }
 
@@ -803,5 +883,6 @@ static void TestFans(AcerGamingWmi wmi)
         Console.WriteLine($"GPU fan mode restored to: {wmi.GetFanMode(FanSelect.Gpu)}");
     }
 }
+
 
 
