@@ -417,6 +417,10 @@ static void WatchEvents()
     Console.WriteLine("Listening. Press the Nitro key, Fn combinations, or plug/unplug AC.");
     Console.WriteLine("Ctrl+C to stop.");
     Console.WriteLine();
+    Console.WriteLine("To identify the Nitro key: press ONLY that key and note which");
+    Console.WriteLine("function/key pair appears. ANV15-41 never emits function 0x07,");
+    Console.WriteLine("so the documented turbo event is not what this model sends.");
+    Console.WriteLine();
 
     using var watcher = AcerEventWatcher.Start();
     var count = 0;
@@ -424,8 +428,8 @@ static void WatchEvents()
     watcher.EventReceived += (_, e) =>
     {
         count++;
-        Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] function={e.Function} (0x{(byte)e.Function:X2}) "
-                          + $"key={e.KeyNumber}");
+        Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] function={e.Function} (0x{(byte)e.Function:X2})  "
+                          + $"key=0x{e.KeyNumber:X2} {e.KeyName}  state=0x{e.DeviceState:X4}");
         Console.WriteLine($"             raw: {e.DescribeRaw()}");
     };
 

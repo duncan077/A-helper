@@ -224,7 +224,10 @@ public sealed class AcerGamingWmi : IDisposable
     // misc-setting index. Encoding from Linuwu-Sense (GPL-2.0).
     private const ulong OverdriveSetOn = 0x1000000000010;
     private const ulong OverdriveSetOff = 0x10;
-    private const ulong OverdriveStateBit = 1UL << 48;
+
+    // The only two GetGamingProfile values with a known meaning.
+    private const ulong OverdriveReadOn = 0x1000001000000;
+    private const ulong OverdriveReadOff = 0x1000000;
 
     /// <summary>Raw GetGamingProfile result. Exposed because the encoding varies by model.</summary>
     public ulong GetGamingProfileRaw() => InvokeRaw(AcerMethod.GetGamingProfile, 0);
@@ -234,24 +237,28 @@ public sealed class AcerGamingWmi : IDisposable
     /// known encoding.
     /// </summary>
     /// <remarks>
-    /// Linuwu-Sense compares the whole word against 0x1000001000000 (on) and
-    /// 0x1000000 (off). ANV15-41 returns 0x00FF000001000000, which matches
-    /// neither - the 0xFF in bits 55:48 looks like a capability mask rather than
-    /// state. This reads bit 48 alone, which is consistent with both encodings,
-    /// but it is UNVERIFIED on this model: confirm with a set/read round-trip
-    /// before trusting it.
+    /// Deliberately an exact match against the two known encodings, matching
+    /// Linuwu-Sense. Anything else returns null, meaning "this model does not
+    /// expose overdrive here" - not "assume off".
+    ///
+    /// ANV15-41 returns 0x00FF000001000000, which matches neither. An earlier
+    /// version guessed that bit 48 was the state bit and reported "on"; a
+    /// set/read round-trip disproved it - SetGamingProfile leaves the value
+    /// completely unchanged on this model, so the 0xFF in bits 55:48 is a
+    /// capability mask and overdrive is simply not reachable this way.
     /// </remarks>
-    public bool? GetLcdOverdrive()
+    public bool? GetLcdOverdrive() => GetGamingProfileRaw() switch
     {
-        var raw = GetGamingProfileRaw();
-        if ((raw & 0xFF) != 0) return null;              // non-zero status
-        if (raw == 0) return null;                        // nothing meaningful
-
-        return (raw & OverdriveStateBit) != 0;
-    }
+        OverdriveReadOn => true,
+        OverdriveReadOff => false,
+        _ => null,
+    };
 
     /// <summary>Enables or disables display overdrive.</summary>
-    /// <remarks>Unverified on ANV15-41 - always confirm by reading back.</remarks>
+    /// <remarks>
+    /// A no-op on models that do not implement it - confirmed on ANV15-41,
+    /// where the value does not move. Always read back rather than assuming.
+    /// </remarks>
     public void SetLcdOverdrive(bool enabled)
         => InvokeChecked(AcerMethod.SetGamingProfile, enabled ? OverdriveSetOn : OverdriveSetOff);
 

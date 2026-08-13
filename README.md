@@ -148,14 +148,14 @@ Contributed here for anyone extending the upstream driver:
 - **CoolBoost is `FanMode.Turbo` written to both fans**, not a misc setting.
 - **Misc index `0x06` is boot animation / sound** (per Linuwu-Sense), which
   identifies one of the previously unknown indices above.
-- **Display overdrive is not a misc setting.** It goes through
+- **Display overdrive is not a misc setting** — it goes through
   `Set/GetGamingProfile` (methods 1/3). Linuwu-Sense compares the whole returned
-  word against `0x1000001000000` (on) and `0x1000000` (off); ANV15-41 returns
-  **`0x00FF000001000000`**, matching neither — the `0xFF` in bits 55:48 looks
-  like a capability mask rather than state. This project reads bit 48 alone and
-  reports the raw word, because the encoding on this model is **unverified**.
-  `AcerHelper.Probe.exe --overdrive-on` prints the XOR of before and after,
-  which identifies the real state bit.
+  word against `0x1000001000000` (on) and `0x1000000` (off). ANV15-41 returns
+  **`0x00FF000001000000`**, matching neither, and **a write is a no-op**: after
+  `SetGamingProfile(0x1000000000010)` the value is bit-for-bit unchanged.
+  So overdrive is **not reachable this way on this model**, the `0xFF` in bits
+  55:48 is a capability mask, and `GetLcdOverdrive()` returns null (unsupported)
+  for anything that is not an exact match.
 - **USB charging** is on the `APGeAction` class (`WMID_GUID3`), not the gaming
   class — per Linuwu-Sense, via its get/set function methods. Not implemented
   here yet.
@@ -174,9 +174,27 @@ The semi-synchronous enumerator blocks in `Next()` instead, so nothing calls
 into us. That blocked thread is why the watcher owns a separate thread and
 connection: blocking the shared dispatcher would stall sensor polling.
 
-The BIOS declares the event's property names and they are documented nowhere, so
-every property is read generically and logged. Run
-`AcerHelper.Probe.exe --events` and press keys to see the real layout.
+The payload layout is confirmed on ANV15-41. The BIOS exposes the packed struct
+as an 8-byte array named `EventDetail`:
+
+```
+[0] function   [1] key_num   [2..3] device_state (LE)   [4..7] reserved
+01 84 08 00 .. = Hotkey, KeyboardBacklightToggle, state 0x0008
+```
+
+Findings that contradict or extend `acer-wmi.c`:
+
+- **Function `0x07` is never emitted.** Nothing on ANV15-41 produces the
+  documented gaming/Turbo key event, so anything bound to it will never fire.
+- **Function `0x02`** is undocumented. Observed with `key_num = 1`.
+- **Function `0x09`** is undocumented and fires immediately after `0x08`
+  (AC adapter) with the same key number — `0` unplugged, `1` plugged — so it
+  appears to mirror AC state.
+- `device_state` genuinely varies: `0x0008` for the keyboard-backlight key,
+  `0x0000` then `0x0001` across two touchpad-toggle presses.
+
+Observed hotkeys: `0x62` BrightnessUp, `0x61` SwitchVideoMode, `0x84`
+KeyboardBacklightToggle, `0x82` TouchpadToggle.
 
 ---
 
