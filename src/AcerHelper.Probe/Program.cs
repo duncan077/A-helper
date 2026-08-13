@@ -33,7 +33,11 @@ if (args.Contains("--wmi-selftest"))
 
 // Every flag that can write must be listed here, or the closing summary
 // claims nothing changed when something did.
-string[] writeFlags = ["--test-profile", "--test-fans", "--health-on", "--health-off"];
+string[] writeFlags =
+[
+    "--test-profile", "--test-fans", "--health-on", "--health-off",
+    "--overdrive-on", "--overdrive-off",
+];
 var readOnly = !args.Any(writeFlags.Contains);
 
 if (!AcerGamingWmi.IsElevated)
@@ -99,6 +103,18 @@ using (wmi)
         Battery(args);
     }
 
+    if (args.Contains("--overdrive") || args.Contains("--overdrive-on") || args.Contains("--overdrive-off"))
+    {
+        Section("DISPLAY OVERDRIVE (GetGamingProfile / SetGamingProfile)");
+        Overdrive(wmi, args);
+    }
+
+    if (args.Contains("--events"))
+    {
+        Section("HOTKEY EVENTS (APGeEvent)");
+        WatchEvents();
+    }
+
     if (args.Contains("--watch"))
     {
         Section("LIVE DIFFERENTIAL WATCH (read-only)");
@@ -146,6 +162,89 @@ static void PrintSensors(AcerGamingWmi wmi)
                       + (r.GpuLikelyAsleep ? "   (dGPU appears powered down)" : ""));
 
     static string Fmt(int? v, string unit) => v is null ? "n/a" : $"{v} {unit}";
+}
+
+/// <summary>
+/// Reads the GetGamingProfile word that carries display overdrive, and
+/// optionally toggles it.
+///
+/// The encoding differs between models. Linuwu-Sense compares the whole word
+/// against 0x1000001000000 (on) / 0x1000000 (off); ANV15-41 returns
+/// 0x00FF000001000000, matching neither. The raw value is printed so a
+/// set/read round-trip can establish which bits actually move.
+/// </summary>
+static void Overdrive(AcerGamingWmi wmi, string[] args)
+{
+    var before = wmi.GetGamingProfileRaw();
+    Console.WriteLine($"GetGamingProfile raw = 0x{before:X16}");
+    Console.WriteLine($"  status byte        = 0x{before & 0xFF:X2}");
+    Console.WriteLine($"  bit 24             = {((before >> 24) & 1) != 0}");
+    Console.WriteLine($"  bit 48             = {((before >> 48) & 1) != 0}   <- read as the state bit");
+    Console.WriteLine($"  bits 55:48         = 0x{(before >> 48) & 0xFF:X2}");
+    Console.WriteLine($"  decoded state      = {wmi.GetLcdOverdrive()?.ToString() ?? "unrecognised"}");
+
+    Console.WriteLine();
+    Console.WriteLine("  Linuwu-Sense reference: 0x1000001000000 = on, 0x1000000 = off");
+
+    var on = args.Contains("--overdrive-on");
+    var off = args.Contains("--overdrive-off");
+    if (!on && !off) return;
+
+    Console.WriteLine();
+    Console.WriteLine($"Setting overdrive {(on ? "ON" : "OFF")}...");
+    try
+    {
+        wmi.SetLcdOverdrive(on);
+    }
+    catch (AcerWmiException ex)
+    {
+        Console.WriteLine($"  rejected: status 0x{ex.Status:X2}");
+        return;
+    }
+
+    Thread.Sleep(500);
+    var after = wmi.GetGamingProfileRaw();
+    Console.WriteLine($"  raw after = 0x{after:X16}");
+
+    if (after == before)
+    {
+        Console.WriteLine("  UNCHANGED - this model may not expose overdrive here.");
+        return;
+    }
+
+    Console.WriteLine($"  CHANGED - bits that moved: 0x{before ^ after:X16}");
+    Console.WriteLine("  Report that mask; it identifies the state bit on this model.");
+}
+
+/// <summary>
+/// Prints raw APGeEvent payloads. The BIOS declares these property names and
+/// they are documented nowhere, so this is how the layout gets established.
+/// </summary>
+static void WatchEvents()
+{
+    Console.WriteLine("Listening. Press the Nitro key, Fn combinations, or plug/unplug AC.");
+    Console.WriteLine("Ctrl+C to stop.");
+    Console.WriteLine();
+
+    using var watcher = AcerEventWatcher.Start();
+    var count = 0;
+
+    watcher.EventReceived += (_, e) =>
+    {
+        count++;
+        Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] function={e.Function} (0x{(byte)e.Function:X2}) "
+                          + $"key={e.KeyNumber}");
+        Console.WriteLine($"             raw: {e.DescribeRaw()}");
+    };
+
+    watcher.Failed += (_, ex) => Console.WriteLine($"  watcher failed: {ex.Message}");
+
+    var stop = false;
+    Console.CancelKeyPress += (_, e) => { e.Cancel = true; stop = true; };
+    while (!stop) Thread.Sleep(200);
+
+    Console.WriteLine();
+    Console.WriteLine($"Stopped. {count} event(s) captured. Nothing was modified.");
 }
 
 /// <summary>

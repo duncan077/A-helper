@@ -152,35 +152,37 @@ internal sealed unsafe class WbemMethodChannel : IDisposable
     }
 
     // -------------------------------------------------------- vtable helpers
+    // internal rather than private: WbemNotificationChannel reuses these and
+    // ConnectServices below, so the proxy-blanket setup exists in one place.
 
-    private static void** Vtbl(void* obj) => *(void***)obj;
+    internal static void** Vtbl(void* obj) => *(void***)obj;
 
-    private static void Release(void* obj)
+    internal static void Release(void* obj)
     {
         if (obj is null) return;
         ((delegate* unmanaged<void*, uint>)Vtbl(obj)[2])(obj);
     }
 
-    private static void Check(int hr, string what)
+    internal static void Check(int hr, string what)
     {
         if (hr < 0) throw new ComCallException(what, hr);
     }
 
-    private static void* Bstr(string s)
+    internal static void* Bstr(string s)
     {
         fixed (char* p = s) return Ole.SysAllocString(p);
     }
 
-    // ------------------------------------------------------------- lifecycle
-
-    public static WbemMethodChannel Open(string wmiNamespace, string className)
+    /// <summary>
+    /// Connects to a WMI namespace and applies the proxy blanket. The caller
+    /// owns the returned IWbemServices* and must Release it.
+    /// </summary>
+    internal static void* ConnectServices(string wmiNamespace)
     {
         EnsureComInitialised();
 
         void* locator = null;
         void* services = null;
-        void* classObj = null;
-        void* path = null;
 
         try
         {
@@ -189,7 +191,6 @@ internal sealed unsafe class WbemMethodChannel : IDisposable
                 Check(Ole.CoCreateInstance(clsid, null, Ole.CLSCTX_INPROC_SERVER, iid, &locator),
                       "CoCreateInstance(WbemLocator)");
 
-            // IWbemLocator::ConnectServer is vtable slot 3.
             var ns = Bstr(wmiNamespace);
             try
             {
@@ -206,6 +207,28 @@ internal sealed unsafe class WbemMethodChannel : IDisposable
                     null, Ole.EOAC_NONE),
                   "CoSetProxyBlanket");
 
+            var result = services;
+            services = null;   // ownership transferred to caller
+            return result;
+        }
+        finally
+        {
+            Release(locator);
+            Release(services);
+        }
+    }
+
+    // ------------------------------------------------------------- lifecycle
+
+    public static WbemMethodChannel Open(string wmiNamespace, string className)
+    {
+        void* services = null;
+        void* classObj = null;
+        void* path = null;
+
+        try
+        {
+            services = ConnectServices(wmiNamespace);
             classObj = GetClassObject(services, className);
 
             path = FindFirstInstancePath(services, className);
@@ -219,14 +242,13 @@ internal sealed unsafe class WbemMethodChannel : IDisposable
         }
         finally
         {
-            Release(locator);
             Release(classObj);
             Release(services);
             if (path is not null) Ole.SysFreeString(path);
         }
     }
 
-    private static void EnsureComInitialised()
+    internal static void EnsureComInitialised()
     {
         if (Interlocked.CompareExchange(ref _comInitialised, 1, 0) != 0) return;
 
@@ -491,6 +513,60 @@ internal sealed unsafe class WbemMethodChannel : IDisposable
         }
     }
 
+    /// <summary>
+    /// Enumerates every non-system property of an object.
+    ///
+    /// Used for WMI event objects, whose property names are declared by the
+    /// BIOS and are not documented anywhere - reading them generically is the
+    /// only way to see what an event actually carries.
+    /// </summary>
+    internal static Dictionary<string, object?> ReadAllProperties(void* obj)
+    {
+        var result = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+
+        // BeginEnumeration=8, Next=9, EndEnumeration=10.
+        var begin = (delegate* unmanaged<void*, int, int>)Vtbl(obj)[8];
+        var next = (delegate* unmanaged<void*, int, void**, Variant*, int*, int*, int>)Vtbl(obj)[9];
+        var end = (delegate* unmanaged<void*, int>)Vtbl(obj)[10];
+
+        if (begin(obj, 0x40 /* WBEM_FLAG_NONSYSTEM_ONLY */) < 0) return result;
+
+        try
+        {
+            while (true)
+            {
+                void* nameBstr = null;
+                var v = default(Variant);
+
+                if (next(obj, 0, &nameBstr, &v, null, null) != 0) break;
+                if (nameBstr is null) break;
+
+                var name = new string((char*)nameBstr);
+                Ole.SysFreeString(nameBstr);
+
+                result[name] = (v.vt & Variant.VT_ARRAY) != 0
+                    ? ReadByteArray(v.ptr)
+                    : VariantToObject(ref v);
+
+                Ole.VariantClear(&v);
+            }
+        }
+        finally { end(obj); }
+
+        return result;
+    }
+
+    private static object? VariantToObject(ref Variant v) => v.vt switch
+    {
+        Variant.VT_I4 or Variant.VT_UI4 => (ulong)(uint)v.lVal,
+        Variant.VT_I8 or Variant.VT_UI8 => (ulong)v.llVal,
+        Variant.VT_I2 or Variant.VT_UI2 => (ulong)(ushort)v.lVal,
+        Variant.VT_UI1 => (ulong)(byte)v.lVal,
+        Variant.VT_BOOL => v.lVal == 0 ? 0UL : 1UL,
+        Variant.VT_BSTR when v.ptr != 0 => new string((char*)v.ptr),
+        _ => null,
+    };
+
     /// <summary>Reads a property as byte[] (arrays) or ulong (scalars).</summary>
     private static object? ReadValue(void* obj, string name)
     {
@@ -525,7 +601,7 @@ internal sealed unsafe class WbemMethodChannel : IDisposable
         finally { Ole.VariantClear(&v); }
     }
 
-    private static byte[]? ReadByteArray(nint safeArray)
+    internal static byte[]? ReadByteArray(nint safeArray)
     {
         if (safeArray == 0) return null;
 

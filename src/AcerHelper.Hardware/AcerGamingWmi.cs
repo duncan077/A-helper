@@ -218,6 +218,43 @@ public sealed class AcerGamingWmi : IDisposable
         InvokeChecked(AcerMethod.SetGamingFanSpeed, input);
     }
 
+    // ------------------------------------------------------- display overdrive
+
+    // Overdrive ("LCD override") is driven through Set/GetGamingProfile, NOT a
+    // misc-setting index. Encoding from Linuwu-Sense (GPL-2.0).
+    private const ulong OverdriveSetOn = 0x1000000000010;
+    private const ulong OverdriveSetOff = 0x10;
+    private const ulong OverdriveStateBit = 1UL << 48;
+
+    /// <summary>Raw GetGamingProfile result. Exposed because the encoding varies by model.</summary>
+    public ulong GetGamingProfileRaw() => InvokeRaw(AcerMethod.GetGamingProfile, 0);
+
+    /// <summary>
+    /// Reads display overdrive state, or null when the value does not match a
+    /// known encoding.
+    /// </summary>
+    /// <remarks>
+    /// Linuwu-Sense compares the whole word against 0x1000001000000 (on) and
+    /// 0x1000000 (off). ANV15-41 returns 0x00FF000001000000, which matches
+    /// neither - the 0xFF in bits 55:48 looks like a capability mask rather than
+    /// state. This reads bit 48 alone, which is consistent with both encodings,
+    /// but it is UNVERIFIED on this model: confirm with a set/read round-trip
+    /// before trusting it.
+    /// </remarks>
+    public bool? GetLcdOverdrive()
+    {
+        var raw = GetGamingProfileRaw();
+        if ((raw & 0xFF) != 0) return null;              // non-zero status
+        if (raw == 0) return null;                        // nothing meaningful
+
+        return (raw & OverdriveStateBit) != 0;
+    }
+
+    /// <summary>Enables or disables display overdrive.</summary>
+    /// <remarks>Unverified on ANV15-41 - always confirm by reading back.</remarks>
+    public void SetLcdOverdrive(bool enabled)
+        => InvokeChecked(AcerMethod.SetGamingProfile, enabled ? OverdriveSetOn : OverdriveSetOff);
+
     // ------------------------------------------------------------- keyboard
 
     /// <summary>Keyboard backlight level. ANV15-41 has single-zone white backlight.</summary>

@@ -148,6 +148,37 @@
           </StackPanel>
         </Border>
 
+        <!-- Display -->
+        <Border Classes="card">
+          <StackPanel>
+            <TextBlock Classes="heading" Text="DISPLAY" />
+
+            <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto">
+              <TextBlock Grid.Column="0" Text="Refresh rate" FontSize="12"
+                         VerticalAlignment="Center" Margin="0,0,10,0" />
+              <ComboBox Grid.Column="1" HorizontalAlignment="Stretch"
+                        ItemsSource="{Binding RefreshRates}"
+                        SelectedItem="{Binding SelectedRefreshRate, Mode=TwoWay}" />
+            </Grid>
+            <TextBlock Classes="label" Margin="0,4,0,12">
+              <Run Text="Resolution:" />
+              <Run Text="{Binding DisplayMode}" />
+            </TextBlock>
+
+            <CheckBox IsChecked="{Binding OverdriveEnabled, Mode=OneWay}"
+                      IsEnabled="{Binding OverdriveSupported}"
+                      Command="{Binding ToggleOverdriveCommand}"
+                      Content="Display overdrive" />
+
+            <TextBlock Classes="label" Margin="0,6,0,0" TextWrapping="Wrap"
+                       Text="Overdrive reduces pixel response time. Its encoding is unverified on this model - confirm the checkbox reflects reality before relying on it." />
+            <TextBlock Classes="label" Margin="0,4,0,0">
+              <Run Text="GetGamingProfile raw:" />
+              <Run Text="{Binding OverdriveRaw}" />
+            </TextBlock>
+          </StackPanel>
+        </Border>
+
         <!-- Power auto-switching -->
         <Border Classes="card">
           <StackPanel>

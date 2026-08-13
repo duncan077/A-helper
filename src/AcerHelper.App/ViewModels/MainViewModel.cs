@@ -31,6 +31,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private AcerBatteryWmi? _battery;
     private AcerFanGuard? _fanGuard;
 
+    // Owns its own thread and connection - see AcerEventWatcher.
+    private AcerEventWatcher? _eventWatcher;
+
     private readonly AppSettings _settings = AppSettings.Load();
 
     // Auto-switching acts on TRANSITIONS only. Reapplying on every poll would
@@ -49,6 +52,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                                                   _ => IsHardwareAvailable);
         ToggleHealthModeCommand = new RelayCommand(_ => _ = ToggleHealthModeAsync(),
                                                    _ => HealthModeSupported);
+        ToggleOverdriveCommand = new RelayCommand(_ => _ = ToggleOverdriveAsync(),
+                                                  _ => OverdriveSupported);
+
+        LoadRefreshRates();
 
         Diagnostics.Write("---- AcerHelper starting ----");
         _ = InitialiseAsync();
@@ -127,6 +134,38 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private string _designCapacity = "--";
     public string DesignCapacity { get => _designCapacity; private set => Set(ref _designCapacity, value); }
+
+    // -------------------------------------------------------------- display
+
+    public ObservableCollection<int> RefreshRates { get; } = [];
+
+    private int _selectedRefreshRate;
+    public int SelectedRefreshRate
+    {
+        get => _selectedRefreshRate;
+        set
+        {
+            // ComboBox pushes 0 while its item source is being repopulated.
+            if (value <= 0 || !Set(ref _selectedRefreshRate, value)) return;
+            ApplyRefreshRate(value);
+        }
+    }
+
+    private string _displayMode = "--";
+    public string DisplayMode { get => _displayMode; private set => Set(ref _displayMode, value); }
+
+    private bool _overdriveSupported;
+    public bool OverdriveSupported
+    {
+        get => _overdriveSupported;
+        private set { if (Set(ref _overdriveSupported, value)) RaiseCanExecuteChanged(); }
+    }
+
+    private bool _overdriveEnabled;
+    public bool OverdriveEnabled { get => _overdriveEnabled; private set => Set(ref _overdriveEnabled, value); }
+
+    private string _overdriveRaw = "--";
+    public string OverdriveRaw { get => _overdriveRaw; private set => Set(ref _overdriveRaw, value); }
 
     // -------------------------------------------------- power auto-switching
 
@@ -207,6 +246,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public ICommand ToggleCoolBoostCommand { get; }
     public ICommand ToggleCustomFanCommand { get; }
     public ICommand ToggleHealthModeCommand { get; }
+    public ICommand ToggleOverdriveCommand { get; }
 
     // --------------------------------------------------------------- logic
 
@@ -271,6 +311,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             IsHardwareAvailable = true;
             Status = "Ready";
             Diagnostics.Write($"init ok: profiles={opened.Item2} current={CurrentProfile}");
+
+            await RefreshOverdriveAsync();
+            StartEventWatcher();
 
             _ = PollLoopAsync(_cts.Token);
         }
@@ -371,6 +414,133 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                     return;
                 }
             }
+        }
+    }
+
+    // ------------------------------------------------------- hotkey handling
+
+    private void StartEventWatcher()
+    {
+        try
+        {
+            var watcher = AcerEventWatcher.Start();
+
+            watcher.EventReceived += (_, e) =>
+            {
+                // Raised on the watcher thread. Log the raw payload every time:
+                // the BIOS declares these property names and they are not
+                // documented, so this is the only record of the real layout.
+                Diagnostics.Write($"APGeEvent function={e.Function} key={e.KeyNumber}  {e.DescribeRaw()}");
+
+                if (e.Function == AcerEventFunction.GamingTurboKey)
+                    _ = CycleProfileAsync();
+            };
+
+            watcher.Failed += (_, ex) =>
+            {
+                Diagnostics.WriteException("event watcher", ex);
+                _ = Dispatcher.UIThread.InvokeAsync(() =>
+                    Status = $"Hotkey watcher stopped - {Diagnostics.Describe(ex)}");
+            };
+
+            _eventWatcher = watcher;
+            Diagnostics.Write("event watcher started");
+        }
+        catch (Exception ex)
+        {
+            // Hotkeys are a convenience; losing them must not break the app.
+            Diagnostics.WriteException("event watcher start", ex);
+        }
+    }
+
+    /// <summary>Advances to the next supported profile. Bound to the Nitro key.</summary>
+    private async Task CycleProfileAsync()
+    {
+        if (SupportedProfiles.Count == 0) return;
+
+        var index = SupportedProfiles.IndexOf(CurrentProfile);
+        var next = SupportedProfiles[(index + 1) % SupportedProfiles.Count];
+
+        await SetProfileAsync(next);
+    }
+
+    // ------------------------------------------------------------- display
+
+    private void LoadRefreshRates()
+    {
+        try
+        {
+            var current = DisplayControl.GetCurrentMode();
+            if (current is null) return;
+
+            DisplayMode = $"{current.Width}x{current.Height}";
+
+            RefreshRates.Clear();
+            foreach (var hz in DisplayControl.GetAvailableRefreshRates()) RefreshRates.Add(hz);
+
+            // Assign the backing field directly: going through the setter would
+            // immediately re-apply the rate the display is already using.
+            _selectedRefreshRate = current.RefreshHz;
+            OnPropertyChanged(nameof(SelectedRefreshRate));
+        }
+        catch (Exception ex)
+        {
+            Diagnostics.WriteException("refresh rates", ex);
+        }
+    }
+
+    private void ApplyRefreshRate(int hz)
+    {
+        var error = DisplayControl.SetRefreshRate(hz);
+        if (error is null)
+        {
+            Status = $"Refresh rate set to {hz} Hz";
+            Diagnostics.Write($"refresh rate -> {hz} Hz");
+        }
+        else
+        {
+            Status = error;
+            Diagnostics.Write($"refresh rate {hz} Hz failed: {error}");
+        }
+    }
+
+    private async Task RefreshOverdriveAsync()
+    {
+        try
+        {
+            var (state, raw) = await _hw.InvokeAsync(() =>
+                ((bool?)_wmi!.GetLcdOverdrive(), _wmi.GetGamingProfileRaw()));
+
+            OverdriveRaw = $"0x{raw:X16}";
+            OverdriveSupported = state is not null;
+            OverdriveEnabled = state ?? false;
+
+            if (state is null)
+                Diagnostics.Write($"overdrive state unrecognised, raw=0x{raw:X16}");
+        }
+        catch (Exception ex)
+        {
+            OverdriveSupported = false;
+            Diagnostics.WriteException("overdrive read", ex);
+        }
+    }
+
+    private async Task ToggleOverdriveAsync()
+    {
+        try
+        {
+            var target = !OverdriveEnabled;
+            await _hw.InvokeAsync(() => _wmi!.SetLcdOverdrive(target));
+
+            await RefreshOverdriveAsync();
+            Status = OverdriveEnabled == target
+                ? $"Display overdrive {(target ? "on" : "off")}"
+                : "Overdrive write accepted but the reported state did not change";
+        }
+        catch (Exception ex)
+        {
+            Status = $"Overdrive toggle failed - {Diagnostics.Describe(ex)}";
+            Diagnostics.WriteException("overdrive toggle", ex);
         }
     }
 
@@ -536,6 +706,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         (ToggleCoolBoostCommand as RelayCommand)?.RaiseCanExecuteChanged();
         (ToggleCustomFanCommand as RelayCommand)?.RaiseCanExecuteChanged();
         (ToggleHealthModeCommand as RelayCommand)?.RaiseCanExecuteChanged();
+        (ToggleOverdriveCommand as RelayCommand)?.RaiseCanExecuteChanged();
     }
 
     // ------------------------------------------------------------ plumbing
@@ -559,6 +730,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         _disposed = true;
 
         _cts.Cancel();
+
+        // Stopped first: it owns a thread blocked in a WMI call, and joining it
+        // before tearing down COM avoids a call landing on a released proxy.
+        _eventWatcher?.Dispose();
 
         // Disposal must also happen on the dispatcher thread - releasing the
         // fan guard writes to the EC to restore Auto.

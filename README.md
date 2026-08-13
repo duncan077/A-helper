@@ -54,6 +54,11 @@ but capability sets differ per model. Run the probe first.
 - **Automatic profile switching on AC / battery**, applied only on a power
   source *transition* — a manual profile choice is never overridden a second
   later
+- **Fn / Nitro key handling** via the `APGeEvent` WMI event class — the Nitro key
+  cycles thermal profiles
+- **Screen refresh rate** switching at the current resolution (pure Win32, works
+  regardless of the Acer interface)
+- **Display overdrive** toggle — encoding unverified on ANV15-41, see below
 - Settings persist to `acerhelper.conf` beside the executable
 - Failures are logged to `acerhelper.log` with HRESULTs decoded to names
 
@@ -141,6 +146,37 @@ Contributed here for anyone extending the upstream driver:
 - **Battery info index 15** returns `3733`, matching the AP21D8M design capacity
   in mAh. Indices 8 (`3001`) and 9 (`17323`) are still unidentified.
 - **CoolBoost is `FanMode.Turbo` written to both fans**, not a misc setting.
+- **Misc index `0x06` is boot animation / sound** (per Linuwu-Sense), which
+  identifies one of the previously unknown indices above.
+- **Display overdrive is not a misc setting.** It goes through
+  `Set/GetGamingProfile` (methods 1/3). Linuwu-Sense compares the whole returned
+  word against `0x1000001000000` (on) and `0x1000000` (off); ANV15-41 returns
+  **`0x00FF000001000000`**, matching neither — the `0xFF` in bits 55:48 looks
+  like a capability mask rather than state. This project reads bit 48 alone and
+  reports the raw word, because the encoding on this model is **unverified**.
+  `AcerHelper.Probe.exe --overdrive-on` prints the XOR of before and after,
+  which identifies the real state bit.
+- **USB charging** is on the `APGeAction` class (`WMID_GUID3`), not the gaming
+  class — per Linuwu-Sense, via its get/set function methods. Not implemented
+  here yet.
+
+### Event interface
+
+`APGeEvent` (`676AA15E-6A47-4D9F-A2CC-1E6D18D14026`) delivers hotkeys. Function
+IDs from `acer-wmi.c`: `0x01` hotkey, `0x04` backlight, `0x05` accelerometer or
+keyboard dock, `0x07` gaming/Turbo key, `0x08` AC adapter.
+
+Events are received with the **semi-synchronous** `ExecNotificationQuery` rather
+than `ExecNotificationQueryAsync`. The async form requires *implementing*
+`IWbemObjectSink` so WMI can call back into managed code — possible under AOT
+via `[UnmanagedCallersOnly]` vtables, but a lot of surface for one event class.
+The semi-synchronous enumerator blocks in `Next()` instead, so nothing calls
+into us. That blocked thread is why the watcher owns a separate thread and
+connection: blocking the shared dispatcher would stall sensor polling.
+
+The BIOS declares the event's property names and they are documented nowhere, so
+every property is read generically and logged. Run
+`AcerHelper.Probe.exe --events` and press keys to see the real layout.
 
 ---
 
