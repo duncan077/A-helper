@@ -27,8 +27,27 @@ Verified end to end on:
 | OS | Windows 11 |
 
 Other Nitro and Predator models very likely work — the interface is shared —
-but capability sets differ per model and per BIOS. Run the probe first, and see
-**[MODELS.md](MODELS.md)** for what has actually been observed on which machines.
+but capability sets differ per model and per BIOS. See **[MODELS.md](MODELS.md)**
+for what has actually been observed on which machines.
+
+### Your model isn't listed?
+
+**You don't need to fork anything or write code.** Download
+`AcerHelper.Probe.exe` from the
+[latest release](https://github.com/duncan077/A-helper/releases/latest), open a
+terminal **as Administrator** where you saved it, and run:
+
+```bash
+AcerHelper.Probe.exe --sweep --battery
+```
+
+That command only reads — it changes nothing. Paste the output into a
+**[model support request](https://github.com/duncan077/A-helper/issues/new?template=model-support.yml)**
+and your machine can be added.
+
+If it reports that the gaming interface was not found, please file it anyway.
+A model that does *not* work is worth recording, because it marks where the
+supported range ends.
 
 ### Feature matrix
 

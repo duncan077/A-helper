@@ -1,0 +1,100 @@
+name: Model support request
+description: Ask for your Acer laptop to be supported, or report what works on it
+title: "[Model] "
+labels: ["model report"]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **You do not need to write any code.** Run one read-only command, paste
+        the output, and that is enough to add your machine.
+
+        Download `AcerHelper.Probe.exe` from the
+        [latest release](https://github.com/duncan077/A-helper/releases/latest),
+        open a terminal **as Administrator** in the folder you put it in, and run:
+
+        ```
+        AcerHelper.Probe.exe --sweep --battery
+        ```
+
+        That command only reads. It changes nothing on your machine.
+
+        If it says the Acer gaming interface was not found, please still file
+        this — a model that does *not* work is worth recording, because it marks
+        where the supported range ends.
+
+  - type: input
+    id: model
+    attributes:
+      label: Exact model
+      description: >-
+        From the sticker underneath, or run
+        `powershell -c "Get-CimInstance Win32_ComputerSystem | Select Model"`.
+      placeholder: Nitro ANV15-41
+    validations:
+      required: true
+
+  - type: input
+    id: bios
+    attributes:
+      label: BIOS version
+      description: >-
+        The probe prints this, or run
+        `powershell -c "Get-CimInstance Win32_BIOS | Select SMBIOSBIOSVersion"`.
+      placeholder: V1.51
+    validations:
+      required: true
+
+  - type: input
+    id: cpu_gpu
+    attributes:
+      label: CPU and GPU
+      placeholder: Ryzen 5 7535HS + RTX 3050 6 GB
+    validations:
+      required: true
+
+  - type: textarea
+    id: probe
+    attributes:
+      label: Probe output
+      description: >-
+        Paste the whole output of `AcerHelper.Probe.exe --sweep --battery`.
+        Raw values matter — the numbers say far more than a summary does.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: events
+    attributes:
+      label: "Optional: hotkeys and charger type"
+      description: >-
+        Output of `AcerHelper.Probe.exe --events`. Press your Nitro key, then
+        unplug and replug the charger. This is what identifies the mode key and
+        whether USB-C charging can be detected on your model.
+      render: text
+
+  - type: textarea
+    id: gpu
+    attributes:
+      label: "Optional: GPU"
+      description: Output of `AcerHelper.Probe.exe --gpu` if you have an NVIDIA GPU.
+      render: text
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything that behaves differently
+      description: >-
+        Especially anything NitroSense can do that this cannot, or a control that
+        appears to do nothing. Absences are as useful as capabilities.
+
+  - type: checkboxes
+    id: willing
+    attributes:
+      label: Follow-up
+      options:
+        - label: >-
+            I am willing to run a couple more commands if that helps confirm
+            something. These are reversible and verify by reading back.

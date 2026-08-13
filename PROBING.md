@@ -221,6 +221,29 @@ discharge cycle and belongs behind a deliberate decision, not a flag.
 
 ---
 
+## Just want your model supported?
+
+You do not have to read the rest of this file, fork anything, or write code. One
+read-only command is enough:
+
+```bash
+AcerHelper.Probe.exe --sweep --battery
+```
+
+Paste the output into a
+**[model support request](https://github.com/duncan077/A-helper/issues/new?template=model-support.yml)**.
+The form asks for your model and BIOS version and nothing else you would have to
+look up.
+
+If the probe says the gaming interface was not found, file it anyway — a model
+that does *not* work is worth recording, because it marks where the supported
+range ends.
+
+The rest of this file is for people who want to identify undocumented settings
+themselves.
+
+---
+
 ## Reporting findings
 
 Open an issue with:

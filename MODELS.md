@@ -100,7 +100,19 @@ short subsection below the table.
 
 ## Reporting a model
 
-Everything needed is read-only. Nothing below changes your machine.
+**You do not need to fork the project or write any code.** One read-only command
+and a
+[model support request](https://github.com/duncan077/A-helper/issues/new?template=model-support.yml)
+is enough:
+
+```bash
+AcerHelper.Probe.exe --sweep --battery
+```
+
+The steps below add detail if you want to go further, but that first command on
+its own is a useful report.
+
+Everything here is read-only. Nothing below changes your machine.
 
 **1. Capabilities and sensors**
 
