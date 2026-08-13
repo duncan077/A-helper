@@ -70,30 +70,65 @@ if (args.Contains("--dump-acpi"))
     Console.WriteLine();
 
     var written = AcpiTables.DumpAll(directory);
-    if (written.Count == 0)
+    foreach (var (signature, path, bytes) in written)
+        Console.WriteLine($"  {signature,-6} {bytes,8:N0} bytes  ->  {path}");
+
+    // The firmware API hands back only the first table for a duplicated
+    // signature, so every SSDT beyond the first is invisible to it. The
+    // registry has them all.
+    Console.WriteLine();
+    Console.WriteLine("From the registry (all SSDTs, not just the first):");
+
+    var tables = new List<(string Name, byte[] Data)>();
+    var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+
+    foreach (var (name, data) in AcpiTables.ReadFromRegistry())
+    {
+        counts.TryGetValue(name, out var seen);
+        counts[name] = seen + 1;
+
+        var fileName = seen == 0 ? $"{name}.aml" : $"{name}-{seen + 1}.aml";
+        var path = Path.Combine(directory, fileName);
+
+        File.WriteAllBytes(path, data);
+        tables.Add((fileName, data));
+        Console.WriteLine($"  {fileName,-14} {data.Length,8:N0} bytes");
+    }
+
+    if (written.Count == 0 && tables.Count == 0)
     {
         Console.Error.WriteLine("Could not read any ACPI table.");
         return 2;
     }
 
-    foreach (var (signature, path, bytes) in written)
-        Console.WriteLine($"  {signature,-6} {bytes,8:N0} bytes  ->  {path}");
-
-    // Locate the control methods behind the gaming interface so the decompiled
-    // output can be searched directly rather than read end to end.
-    var dsdt = AcpiTables.Read("DSDT");
-    if (dsdt is not null)
+    // Locate the control methods behind each interface so the decompiled output
+    // can be searched directly rather than read end to end.
+    var interfaces = new (string Label, Guid Id)[]
     {
-        var gaming = new Guid("7A4DDFE7-5B5D-40B4-8595-4408E0CC7F56");
-        var battery = new Guid("79772EC5-04B1-4BFD-843C-61E7F77B6CC9");
+        ("AcerGamingFunction", new Guid("7A4DDFE7-5B5D-40B4-8595-4408E0CC7F56")),
+        ("BatteryControl", new Guid("79772EC5-04B1-4BFD-843C-61E7F77B6CC9")),
+        ("APGeAction", new Guid("61EF69EA-865C-4BC3-A502-A0DEBA0CB531")),
+        ("APGeEvent", new Guid("676AA15E-6A47-4D9F-A2CC-1E6D18D14026")),
+    };
 
-        Console.WriteLine();
-        Console.WriteLine("Control methods behind the WMI interfaces (from _WDG):");
-        foreach (var name in AcpiTables.FindWmiMethodNames(dsdt, gaming))
-            Console.WriteLine($"  AcerGamingFunction -> {name}");
-        foreach (var name in AcpiTables.FindWmiMethodNames(dsdt, battery))
-            Console.WriteLine($"  BatteryControl     -> {name}");
+    Console.WriteLine();
+    Console.WriteLine("Control methods behind the WMI interfaces (from _WDG):");
+
+    var found = false;
+    foreach (var (fileName, data) in tables)
+    {
+        foreach (var (label, id) in interfaces)
+        {
+            foreach (var method in AcpiTables.FindWmiMethodNames(data, id))
+            {
+                Console.WriteLine($"  {label,-20} -> {method,-6} in {fileName}");
+                found = true;
+            }
+        }
     }
+
+    if (!found)
+        Console.WriteLine("  none located - the interfaces may be in a table Windows did not record.");
 
     Console.WriteLine();
     Console.WriteLine("Decompile with the ACPI compiler (part of the ACPICA tools):");

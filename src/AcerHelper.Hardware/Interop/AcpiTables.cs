@@ -116,6 +116,118 @@ public static unsafe partial class AcpiTables
         return written;
     }
 
+    // ------------------------------------------------------------- registry
+    //
+    // GetSystemFirmwareTable returns only the FIRST table for a duplicated
+    // signature, so on a machine with a dozen SSDTs it hands back one of them
+    // and silently hides the rest - including, on Acer, the one that actually
+    // carries the gaming WMI methods.
+    //
+    // Windows stores every table separately under HKLM\HARDWARE\ACPI, keyed
+    // SSDT, SSD1, SSD2 ... so reading there gets the complete set.
+
+    private static readonly nint HKEY_LOCAL_MACHINE = unchecked((nint)0x80000002);
+    private const uint KEY_READ = 0x20019;
+
+    [LibraryImport("advapi32.dll", EntryPoint = "RegOpenKeyExW", StringMarshalling = StringMarshalling.Utf16)]
+    private static partial int RegOpenKeyEx(nint key, string subKey, uint options, uint access, out nint result);
+
+    [LibraryImport("advapi32.dll", EntryPoint = "RegEnumKeyExW", StringMarshalling = StringMarshalling.Utf16)]
+    private static partial int RegEnumKeyEx(nint key, uint index, [Out] char[] name, ref uint nameLength,
+                                            nint reserved, nint className, nint classLength, nint lastWrite);
+
+    [LibraryImport("advapi32.dll", EntryPoint = "RegQueryValueExW", StringMarshalling = StringMarshalling.Utf16)]
+    private static partial int RegQueryValueEx(nint key, string? valueName, nint reserved,
+                                               out uint type, [Out] byte[]? data, ref uint dataLength);
+
+    [LibraryImport("advapi32.dll")]
+    private static partial int RegCloseKey(nint key);
+
+    private static List<string> ChildKeys(nint key)
+    {
+        var names = new List<string>();
+        var buffer = new char[256];
+
+        for (uint i = 0; ; i++)
+        {
+            var length = (uint)buffer.Length;
+            if (RegEnumKeyEx(key, i, buffer, ref length, 0, 0, 0, 0) != 0) break;
+            names.Add(new string(buffer, 0, (int)length));
+        }
+
+        return names;
+    }
+
+    private static byte[]? ReadBinaryValue(nint key, string valueName)
+    {
+        uint size = 0;
+        if (RegQueryValueEx(key, valueName, 0, out _, null, ref size) != 0 || size == 0) return null;
+
+        var data = new byte[size];
+        return RegQueryValueEx(key, valueName, 0, out _, data, ref size) == 0 ? data : null;
+    }
+
+    /// <summary>
+    /// Every ACPI table Windows recorded in the registry, keyed by its registry
+    /// name (DSDT, SSDT, SSD1, ...). This is the only way to reach the SSDTs
+    /// that GetSystemFirmwareTable hides behind a duplicated signature.
+    /// </summary>
+    public static IReadOnlyList<(string Name, byte[] Data)> ReadFromRegistry()
+    {
+        var results = new List<(string, byte[])>();
+
+        if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, @"HARDWARE\ACPI", 0, KEY_READ, out var root) != 0)
+            return results;
+
+        try
+        {
+            // Layout is ACPI\<signature>\<OEM id>\<OEM table id>\<revision>,
+            // with the table itself in a single binary value.
+            foreach (var signature in ChildKeys(root))
+            {
+                if (RegOpenKeyEx(root, signature, 0, KEY_READ, out var sigKey) != 0) continue;
+
+                try
+                {
+                    foreach (var oem in ChildKeys(sigKey))
+                    {
+                        if (RegOpenKeyEx(sigKey, oem, 0, KEY_READ, out var oemKey) != 0) continue;
+
+                        try
+                        {
+                            foreach (var table in ChildKeys(oemKey))
+                            {
+                                if (RegOpenKeyEx(oemKey, table, 0, KEY_READ, out var tableKey) != 0) continue;
+
+                                try
+                                {
+                                    foreach (var revision in ChildKeys(tableKey))
+                                    {
+                                        if (RegOpenKeyEx(tableKey, revision, 0, KEY_READ, out var revKey) != 0)
+                                            continue;
+
+                                        try
+                                        {
+                                            var data = ReadBinaryValue(revKey, "00000000");
+                                            if (data is { Length: > 4 }) results.Add((signature, data));
+                                        }
+                                        finally { RegCloseKey(revKey); }
+                                    }
+                                }
+                                finally { RegCloseKey(tableKey); }
+                            }
+                        }
+                        finally { RegCloseKey(oemKey); }
+                    }
+                }
+                finally { RegCloseKey(sigKey); }
+            }
+        }
+        finally { RegCloseKey(root); }
+
+        return results;
+    }
+
     /// <summary>
     /// Finds the ACPI method names behind a WMI GUID by scanning for its _WDG
     /// entry, so the right control method can be located in decompiled output.
