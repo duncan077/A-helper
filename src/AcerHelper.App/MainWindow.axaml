@@ -2,6 +2,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="using:AcerHelper.App.ViewModels"
         xmlns:hw="using:AcerHelper.Hardware"
+        xmlns:local="using:AcerHelper.App"
         x:Class="AcerHelper.App.MainWindow"
         x:DataType="vm:MainViewModel"
         Title="AcerHelper"
@@ -195,44 +196,40 @@
             <TextBlock Classes="label" Margin="0,6,0,14" TextWrapping="Wrap"
                        Text="Offsets apply to the highest performance state and are not persisted by the driver — a reboot clears them." />
 
-            <!-- CPU -->
-            <TextBlock FontSize="12" FontWeight="SemiBold" Text="CPU Curve Optimizer" />
-            <TextBlock Classes="label" Text="{Binding SmuStatusText}" Margin="0,0,0,6" />
+            <!-- CPU: Windows power management -->
+            <TextBlock FontSize="12" FontWeight="SemiBold" Text="{Binding CpuName}" />
+            <TextBlock Classes="label" Text="Managed through Windows power settings" Margin="0,0,0,8" />
 
-            <StackPanel IsEnabled="{Binding SmuAvailable}">
-              <TextBlock Classes="label">
-                <Run Text="All-core offset" />
-                <Run Text="{Binding CurveOffset, StringFormat={}{0:F0}}" />
-              </TextBlock>
-              <Slider Minimum="-50" Maximum="10" TickFrequency="5"
-                      Value="{Binding CurveOffset, Mode=TwoWay}" />
+            <StackPanel IsEnabled="{Binding WindowsPowerAvailable}">
+              <TextBlock Classes="label" Text="Power mode" />
+              <ComboBox HorizontalAlignment="Stretch" Margin="0,0,0,8"
+                        ItemsSource="{Binding PowerModes}"
+                        SelectedItem="{Binding SelectedPowerMode, Mode=TwoWay}" />
 
-              <StackPanel Orientation="Horizontal" Margin="0,6,0,10">
-                <Button Content="Apply undervolt" Command="{Binding ApplyCurveCommand}"
-                        Padding="14,6" Margin="0,0,6,0" />
-                <Button Content="Reset" Command="{Binding ResetCurveCommand}" Padding="14,6" />
-              </StackPanel>
-
-              <TextBlock Classes="label">
-                <Run Text="Sustained power limit" />
-                <Run Text="{Binding CpuPowerLimit, StringFormat={}{0:F0} W}" />
-              </TextBlock>
-              <Slider Minimum="5" Maximum="120" TickFrequency="5"
-                      Value="{Binding CpuPowerLimit, Mode=TwoWay}" />
+              <TextBlock Classes="label" Text="Power plan" />
+              <ComboBox HorizontalAlignment="Stretch" Margin="0,0,0,8"
+                        ItemsSource="{Binding PowerPlans}"
+                        SelectedItem="{Binding SelectedPowerPlan, Mode=TwoWay}">
+                <ComboBox.ItemTemplate>
+                  <DataTemplate x:DataType="local:PowerPlan">
+                    <TextBlock Text="{Binding Name}" />
+                  </DataTemplate>
+                </ComboBox.ItemTemplate>
+              </ComboBox>
 
               <TextBlock Classes="label">
-                <Run Text="Temperature limit" />
-                <Run Text="{Binding CpuTempLimit, StringFormat={}{0:F0} °C}" />
+                <Run Text="Maximum processor state" />
+                <Run Text="{Binding MaxProcessorState, StringFormat={}{0:F0}%}" />
               </TextBlock>
-              <Slider Minimum="60" Maximum="100" TickFrequency="5"
-                      Value="{Binding CpuTempLimit, Mode=TwoWay}" />
+              <Slider Minimum="20" Maximum="100" TickFrequency="5"
+                      Value="{Binding MaxProcessorState, Mode=TwoWay}" />
 
-              <Button Content="Apply CPU limits" Command="{Binding ApplyCpuPowerCommand}"
+              <Button Content="Apply processor limit" Command="{Binding ApplyProcessorStateCommand}"
                       Padding="14,6" Margin="0,6,0,0" HorizontalAlignment="Left" />
             </StackPanel>
 
             <TextBlock Classes="label" Margin="0,6,0,0" TextWrapping="Wrap"
-                       Text="Writes to the CPU's System Management Unit. The SMU accepting an offset does not mean it is stable — instability usually appears only under sustained load, so stress-test before relying on it. Settings clear at reboot." />
+                       Text="Capping maximum processor state holds boost clocks down, which lowers package power and temperature. Unlike SMU undervolting it needs no kernel driver, and it persists across reboots." />
           </StackPanel>
         </Border>
 

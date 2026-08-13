@@ -37,9 +37,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     // Owns its own thread and connection - see AcerEventWatcher.
     private AcerEventWatcher? _eventWatcher;
 
-    // Tuning back-ends. Both are optional and absent on most machines.
+    // Optional and absent on most machines.
     private NvApi? _nvApi;
-    private RyzenSmu? _smu;
 
     private readonly AppSettings _settings = AppSettings.Load();
 
@@ -64,9 +63,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         ApplyGpuOffsetsCommand = new RelayCommand(_ => _ = ApplyGpuOffsetsAsync(), _ => GpuAvailable);
         ResetGpuOffsetsCommand = new RelayCommand(_ => _ = ResetGpuOffsetsAsync(), _ => GpuAvailable);
-        ApplyCurveCommand = new RelayCommand(_ => _ = ApplyCurveAsync(), _ => SmuAvailable);
-        ResetCurveCommand = new RelayCommand(_ => _ = ResetCurveAsync(), _ => SmuAvailable);
-        ApplyCpuPowerCommand = new RelayCommand(_ => _ = ApplyCpuPowerAsync(), _ => SmuAvailable);
+        ApplyProcessorStateCommand = new RelayCommand(_ => ApplyProcessorState(),
+                                                      _ => WindowsPowerAvailable);
 
         LoadRefreshRates();
         InitialiseTuning();
@@ -170,18 +168,66 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private double _gpuMemoryOffset;
     public double GpuMemoryOffset { get => _gpuMemoryOffset; set => Set(ref _gpuMemoryOffset, value); }
 
-    private bool _smuAvailable;
-    public bool SmuAvailable
+    // ------------------------------------------------------- windows power
+
+    private bool _windowsPowerAvailable;
+    public bool WindowsPowerAvailable
     {
-        get => _smuAvailable;
-        private set { if (Set(ref _smuAvailable, value)) RaiseCanExecuteChanged(); }
+        get => _windowsPowerAvailable;
+        private set { if (Set(ref _windowsPowerAvailable, value)) RaiseCanExecuteChanged(); }
     }
 
-    private string _smuStatusText = "Not initialised";
-    public string SmuStatusText { get => _smuStatusText; private set => Set(ref _smuStatusText, value); }
+    private string _cpuName = "--";
+    public string CpuName { get => _cpuName; private set => Set(ref _cpuName, value); }
 
-    private double _curveOffset;
-    public double CurveOffset { get => _curveOffset; set => Set(ref _curveOffset, value); }
+    public ObservableCollection<WindowsPowerMode> PowerModes { get; } = [];
+
+    private WindowsPowerMode _selectedPowerMode = WindowsPowerMode.Unknown;
+    public WindowsPowerMode SelectedPowerMode
+    {
+        get => _selectedPowerMode;
+        set
+        {
+            if (value == WindowsPowerMode.Unknown || !Set(ref _selectedPowerMode, value)) return;
+
+            var error = WindowsPower.SetPowerMode(value);
+            Status = error ?? $"Power mode set to {Describe(value)}";
+            Diagnostics.Write($"power mode -> {value}: {error ?? "ok"}");
+        }
+    }
+
+    public ObservableCollection<PowerPlan> PowerPlans { get; } = [];
+
+    private PowerPlan? _selectedPowerPlan;
+    public PowerPlan? SelectedPowerPlan
+    {
+        get => _selectedPowerPlan;
+        set
+        {
+            if (value is null || !Set(ref _selectedPowerPlan, value)) return;
+
+            var error = WindowsPower.SetActivePlan(value.Id);
+            Status = error ?? $"Power plan set to {value.Name}";
+
+            // Max processor state is per-plan, so re-read after switching.
+            if (error is null)
+            {
+                _maxProcessorState = WindowsPower.GetMaxProcessorState() ?? _maxProcessorState;
+                OnPropertyChanged(nameof(MaxProcessorState));
+            }
+        }
+    }
+
+    private double _maxProcessorState = 100;
+    public double MaxProcessorState { get => _maxProcessorState; set => Set(ref _maxProcessorState, value); }
+
+    public static string Describe(WindowsPowerMode mode) => mode switch
+    {
+        WindowsPowerMode.BestEfficiency => "Best efficiency",
+        WindowsPowerMode.Balanced => "Balanced",
+        WindowsPowerMode.BestPerformance => "Best performance",
+        _ => "Unknown",
+    };
 
     private bool _gpuPowerAdjustable;
     public bool GpuPowerAdjustable { get => _gpuPowerAdjustable; private set => Set(ref _gpuPowerAdjustable, value); }
@@ -204,12 +250,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private double _cpuTempLimit = 90;
     public double CpuTempLimit { get => _cpuTempLimit; set => Set(ref _cpuTempLimit, value); }
 
-    public ICommand ApplyCpuPowerCommand { get; private set; } = null!;
 
     public ICommand ApplyGpuOffsetsCommand { get; private set; } = null!;
     public ICommand ResetGpuOffsetsCommand { get; private set; } = null!;
-    public ICommand ApplyCurveCommand { get; private set; } = null!;
-    public ICommand ResetCurveCommand { get; private set; } = null!;
+    public ICommand ApplyProcessorStateCommand { get; private set; } = null!;
 
     // -------------------------------------------------------------- display
 
@@ -448,11 +492,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                     };
 
                     var r = s.sensors;
-                    CpuTemp = r.CpuTemperatureC is { } ct ? $"{ct} Â°C" : "--";
+                    CpuTemp = r.CpuTemperatureC is { } ct ? $"{ct} °C" : "--";
                     CpuFan = r.CpuFanRpm is { } cf ? $"{cf} rpm" : "--";
                     GpuFan = r.GpuFanRpm is { } gf ? $"{gf} rpm" : "--";
-                    SystemTemp = r.ExternalTemperature2C is { } et ? $"{et} Â°C" : "--";
-                    GpuTemp = r.GpuLikelyAsleep ? "asleep" : $"{r.GpuTemperatureC} Â°C";
+                    SystemTemp = r.ExternalTemperature2C is { } et ? $"{et} °C" : "--";
+                    GpuTemp = r.GpuLikelyAsleep ? "asleep" : $"{r.GpuTemperatureC} °C";
 
                     CurrentProfile = s.profile;
                     FanModeText = s.cpuMode.ToString();
@@ -560,33 +604,50 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         try
         {
-            _smu = RyzenSmu.TryOpen(out var pawnStatus);
-            if (_smu is { IsUsable: true })
+            CpuName = CpuInfo.Identify().BrandString;
+
+            PowerModes.Clear();
+            foreach (var mode in new[]
+                     {
+                         WindowsPowerMode.BestEfficiency,
+                         WindowsPowerMode.Balanced,
+                         WindowsPowerMode.BestPerformance,
+                     })
             {
-                SmuAvailable = true;
-                SmuStatusText = $"{_smu.Cpu.Codename} Â· SMU 0x{_smu.SmuVersion:X8} Â· validated";
-                Diagnostics.Write($"smu: {_smu.Cpu.Codename} family={_smu.Family} ver=0x{_smu.SmuVersion:X8}");
+                PowerModes.Add(mode);
             }
-            else
-            {
-                SmuAvailable = false;
-                SmuStatusText = pawnStatus switch
-                {
-                    PawnIoStatus.LibraryMissing => "PawnIO not installed",
-                    PawnIoStatus.ModuleNotFound => "RyzenSMU.bin not found",
-                    PawnIoStatus.DriverNotRunning => "PawnIO driver not running",
-                    PawnIoStatus.ModuleLoadFailed => "SMU did not answer the validation probe",
-                    _ => "unavailable",
-                };
-                Diagnostics.Write($"smu unavailable: {pawnStatus}");
-            }
+
+            _selectedPowerMode = WindowsPower.GetPowerMode();
+            OnPropertyChanged(nameof(SelectedPowerMode));
+
+            PowerPlans.Clear();
+            foreach (var plan in WindowsPower.GetPlans()) PowerPlans.Add(plan);
+
+            var active = WindowsPower.GetActivePlan();
+            _selectedPowerPlan = PowerPlans.FirstOrDefault(p => p.Id == active);
+            OnPropertyChanged(nameof(SelectedPowerPlan));
+
+            _maxProcessorState = WindowsPower.GetMaxProcessorState() ?? 100;
+            OnPropertyChanged(nameof(MaxProcessorState));
+
+            WindowsPowerAvailable = true;
+            Diagnostics.Write($"windows power: mode={_selectedPowerMode} "
+                              + $"plan={_selectedPowerPlan?.Name ?? "?"} maxproc={_maxProcessorState}%");
         }
         catch (Exception ex)
         {
-            SmuAvailable = false;
-            SmuStatusText = "unavailable";
-            Diagnostics.WriteException("smu init", ex);
+            WindowsPowerAvailable = false;
+            Diagnostics.WriteException("windows power init", ex);
         }
+    }
+
+    private void ApplyProcessorState()
+    {
+        var percent = (int)MaxProcessorState;
+        var error = WindowsPower.SetMaxProcessorState(percent);
+
+        Status = error ?? $"Maximum processor state set to {percent}%";
+        Diagnostics.Write($"max processor state -> {percent}%: {error ?? "ok"}");
     }
 
     private async Task ApplyGpuOffsetsAsync()
@@ -636,64 +697,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
-    private async Task ApplyCurveAsync()
-    {
-        var offset = (int)CurveOffset;
 
-        try
-        {
-            var result = await Task.Run(() => _smu!.SetCurveOptimizerAll(offset));
 
-            Status = result.IsOk
-                ? $"Curve Optimizer {offset} accepted - test under load before trusting it"
-                : $"Undervolt failed - {result}";
-
-            Diagnostics.Write($"curve optimizer {offset} -> {result}");
-        }
-        catch (Exception ex)
-        {
-            Status = $"Undervolt failed - {Diagnostics.Describe(ex)}";
-            Diagnostics.WriteException("curve optimizer", ex);
-        }
-    }
-
-    private async Task ApplyCpuPowerAsync()
-    {
-        var watts = (int)CpuPowerLimit;
-        var celsius = (int)CpuTempLimit;
-
-        try
-        {
-            var (power, thermal) = await Task.Run(() =>
-                (_smu!.SetSustainedPowerLimit(watts), _smu.SetTemperatureLimit(celsius)));
-
-            Status = power.IsOk && thermal.IsOk
-                ? $"CPU limits applied: {watts} W, {celsius} °C"
-                : $"CPU limits: power {(power.IsOk ? "ok" : power.ToString())}, "
-                  + $"thermal {(thermal.IsOk ? "ok" : thermal.ToString())}";
-
-            Diagnostics.Write($"cpu power={watts}W -> {power}; temp={celsius}C -> {thermal}");
-        }
-        catch (Exception ex)
-        {
-            Status = $"CPU limits failed - {Diagnostics.Describe(ex)}";
-            Diagnostics.WriteException("cpu power", ex);
-        }
-    }
-
-    private async Task ResetCurveAsync()
-    {
-        try
-        {
-            await Task.Run(() => _smu!.ResetCurveOptimizer());
-            CurveOffset = 0;
-            Status = "Curve Optimizer cleared";
-        }
-        catch (Exception ex)
-        {
-            Status = $"Undervolt reset failed - {Diagnostics.Describe(ex)}";
-        }
-    }
 
     // ------------------------------------------------------- hotkey handling
 
@@ -1036,8 +1041,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         (ToggleOverdriveCommand as RelayCommand)?.RaiseCanExecuteChanged();
         (ApplyGpuOffsetsCommand as RelayCommand)?.RaiseCanExecuteChanged();
         (ResetGpuOffsetsCommand as RelayCommand)?.RaiseCanExecuteChanged();
-        (ApplyCurveCommand as RelayCommand)?.RaiseCanExecuteChanged();
-        (ResetCurveCommand as RelayCommand)?.RaiseCanExecuteChanged();
+        (ApplyProcessorStateCommand as RelayCommand)?.RaiseCanExecuteChanged();
     }
 
     // ------------------------------------------------------------ plumbing
@@ -1082,9 +1086,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
         catch (Exception ex) { Diagnostics.WriteException("shutdown", ex); }
 
-        // Undervolts are volatile and clear at reboot, so they are deliberately
-        // NOT reset here - the user's setting should survive closing the app.
-        _smu?.Dispose();
         _nvApi?.Dispose();
 
         _hw.Dispose();
