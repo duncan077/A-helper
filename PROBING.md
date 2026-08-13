@@ -234,6 +234,10 @@ Open an issue with:
 Raw values are more useful than conclusions. `0x53` tells the next person
 something; "profiles work" does not.
 
+Then add a row to **[MODELS.md](MODELS.md)**, which records what has been
+confirmed on which machines. A confirmed *absence* belongs there too — it stops
+the next person hunting for something their model does not have.
+
 ---
 
 ## Adding support in code

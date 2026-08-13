@@ -27,7 +27,8 @@ Verified end to end on:
 | OS | Windows 11 |
 
 Other Nitro and Predator models very likely work — the interface is shared —
-but capability sets differ per model. Run the probe first.
+but capability sets differ per model and per BIOS. Run the probe first, and see
+**[MODELS.md](MODELS.md)** for what has actually been observed on which machines.
 
 ### Feature matrix
 
@@ -522,8 +523,10 @@ explicit, informed user action.
 
 Other Nitro and Predator models very likely work, but capability sets differ per
 model and BIOS version. **[PROBING.md](PROBING.md)** walks through asking your
-own machine what it supports — read-only first — and how to report findings so
-they are useful to the next person.
+own machine what it supports — read-only first — and
+**[MODELS.md](MODELS.md)** records what has been confirmed so far. Adding your
+machine is a five-minute job, and a confirmed *absence* is as useful as a
+confirmed capability.
 
 If you are changing the hardware layer, read **[CLAUDE.md](CLAUDE.md)** first.
 It documents the Native AOT and COM-apartment constraints, which cause runtime
