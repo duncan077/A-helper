@@ -259,12 +259,64 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             {
                 _maxProcessorState = WindowsPower.GetMaxProcessorState() ?? _maxProcessorState;
                 OnPropertyChanged(nameof(MaxProcessorState));
+                RefreshBoostState();
             }
         }
     }
 
     private double _maxProcessorState = 100;
     public double MaxProcessorState { get => _maxProcessorState; set => Set(ref _maxProcessorState, value); }
+
+    private bool _turboBoostEnabled = true;
+
+    /// <summary>
+    /// Processor boost (turbo) on the active plan.
+    /// </summary>
+    /// <remarks>
+    /// A two-state toggle over what is really a 0-6 setting. Anything other than
+    /// Disabled reads as "on", so an exotic mode set elsewhere - or by a
+    /// boost_&lt;Profile&gt; line - is not misreported as off. Turning the toggle
+    /// on writes plain Enabled; use boost_&lt;Profile&gt; for the efficient and
+    /// aggressive variants.
+    /// </remarks>
+    public bool TurboBoostEnabled
+    {
+        get => _turboBoostEnabled;
+        set
+        {
+            if (!Set(ref _turboBoostEnabled, value)) return;
+
+            var mode = value ? ProcessorBoostMode.Enabled : ProcessorBoostMode.Disabled;
+            var error = WindowsPower.SetBoostMode(mode);
+
+            Status = error ?? $"Turbo boost {(value ? "enabled" : "disabled")}";
+            Diagnostics.Write($"boost -> {mode}: {error ?? "ok"}");
+
+            RefreshBoostState();
+        }
+    }
+
+    private string _boostModeText = "--";
+    public string BoostModeText { get => _boostModeText; private set => Set(ref _boostModeText, value); }
+
+    /// <summary>
+    /// Re-reads boost from the active plan. Called after any write and after a
+    /// plan switch, because the setting is stored per-plan.
+    /// </summary>
+    private void RefreshBoostState()
+    {
+        var mode = WindowsPower.GetBoostMode();
+
+        BoostModeText = mode?.ToString() ?? "unavailable";
+
+        var enabled = mode is not null && mode != ProcessorBoostMode.Disabled;
+        if (_turboBoostEnabled == enabled) return;
+
+        // Assign the field directly: routing through the setter would write the
+        // value straight back to Windows.
+        _turboBoostEnabled = enabled;
+        OnPropertyChanged(nameof(TurboBoostEnabled));
+    }
 
     public static string Describe(WindowsPowerMode mode) => mode switch
     {
@@ -687,6 +739,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
             _maxProcessorState = WindowsPower.GetMaxProcessorState() ?? 100;
             OnPropertyChanged(nameof(MaxProcessorState));
+
+            RefreshBoostState();
 
             WindowsPowerAvailable = true;
             Diagnostics.Write($"windows power: mode={_selectedPowerMode} "

@@ -253,6 +253,13 @@
                 </ComboBox.ItemTemplate>
               </ComboBox>
 
+              <CheckBox IsChecked="{Binding TurboBoostEnabled, Mode=TwoWay}"
+                        Content="Turbo boost" Margin="0,0,0,2" />
+              <TextBlock Classes="label" Margin="0,0,0,8">
+                <Run Text="Boost mode:" />
+                <Run Text="{Binding BoostModeText}" />
+              </TextBlock>
+
               <TextBlock Classes="label">
                 <Run Text="Maximum processor state" />
                 <Run Text="{Binding MaxProcessorState, StringFormat={}{0:F0}%}" />
