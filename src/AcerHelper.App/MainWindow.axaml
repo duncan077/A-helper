@@ -133,17 +133,22 @@
             <Border Background="{DynamicResource SystemControlBackgroundBaseLowBrush}"
                     CornerRadius="6" Padding="10" Margin="0,12,0,0">
               <StackPanel>
-                <TextBlock Classes="label" Text="FAN CURVE" Margin="0,0,0,6" />
+                <CheckBox IsChecked="{Binding CurveEnabled, Mode=TwoWay}"
+                          Content="Custom fan curve" />
+                <TextBlock Classes="label" Margin="0,2,0,0" TextWrapping="Wrap"
+                           IsVisible="{Binding !CurveEnabled}"
+                           Text="Off — the EC controls the fans. Turning this on stores a curve per thermal profile." />
 
-                <Grid ColumnDefinitions="Auto,*" Margin="0,0,0,8">
-                  <TextBlock Grid.Column="0" Text="Profile" FontSize="12"
-                             VerticalAlignment="Center" Margin="0,0,10,0" />
-                  <ComboBox Grid.Column="1" HorizontalAlignment="Stretch"
-                            ItemsSource="{Binding SupportedProfiles}"
-                            SelectedItem="{Binding CurveProfile, Mode=TwoWay}" />
-                </Grid>
+                <StackPanel IsVisible="{Binding CurveEnabled}" Margin="0,8,0,0">
+                  <Grid ColumnDefinitions="Auto,*" Margin="0,0,0,8">
+                    <TextBlock Grid.Column="0" Text="Profile" FontSize="12"
+                               VerticalAlignment="Center" Margin="0,0,10,0" />
+                    <ComboBox Grid.Column="1" HorizontalAlignment="Stretch"
+                              ItemsSource="{Binding SupportedProfiles}"
+                              SelectedItem="{Binding CurveProfile, Mode=TwoWay}" />
+                  </Grid>
 
-                <TextBlock Classes="label" Text="CPU fan — drag the points" Margin="0,0,0,2" />
+                  <TextBlock Classes="label" Text="CPU fan — drag the points" Margin="0,0,0,2" />
                 <ctl:FanCurveEditor Points="{Binding FanCurveRows}"
                                     CurrentTemperature="{Binding CurveMarkerTemp}"
                                     Height="150" Margin="0,0,0,10" />
@@ -159,8 +164,9 @@
                   <Button Content="Clear" Command="{Binding ClearFanCurveCommand}" Padding="12,6" />
                 </StackPanel>
 
-                <TextBlock Classes="label" Margin="0,6,0,0" TextWrapping="Wrap"
-                           Text="Each profile stores its own pair of curves. 0% stops the fan, as the EC itself does at idle; 1–29% cannot be programmed so it snaps to off or 30%. The dashed line marks the current CPU temperature." />
+                  <TextBlock Classes="label" Margin="0,6,0,0" TextWrapping="Wrap"
+                             Text="Each profile stores its own pair of curves. 0% stops the fan, as the EC itself does at idle; 1–29% cannot be programmed so it snaps to off or 30%. The dashed line marks the current CPU temperature." />
+                </StackPanel>
               </StackPanel>
             </Border>
 
@@ -288,10 +294,35 @@
                         ItemsSource="{Binding RefreshRates}"
                         SelectedItem="{Binding SelectedRefreshRate, Mode=TwoWay}" />
             </Grid>
-            <TextBlock Classes="label" Margin="0,4,0,12">
+            <TextBlock Classes="label" Margin="0,4,0,10">
               <Run Text="Resolution:" />
               <Run Text="{Binding DisplayMode}" />
             </TextBlock>
+
+            <CheckBox IsChecked="{Binding AutoRefreshRateEnabled, Mode=TwoWay}"
+                      Content="Switch refresh rate automatically" />
+
+            <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto"
+                  Margin="0,8,0,0"
+                  IsEnabled="{Binding AutoRefreshRateEnabled}">
+
+              <TextBlock Grid.Row="0" Grid.Column="0" Text="On AC"
+                         VerticalAlignment="Center" Margin="0,0,10,6" FontSize="12" />
+              <ComboBox Grid.Row="0" Grid.Column="1" Margin="0,0,0,6"
+                        HorizontalAlignment="Stretch"
+                        ItemsSource="{Binding RefreshRates}"
+                        SelectedItem="{Binding AcRefreshRate, Mode=TwoWay}" />
+
+              <TextBlock Grid.Row="1" Grid.Column="0" Text="On battery"
+                         VerticalAlignment="Center" Margin="0,0,10,0" FontSize="12" />
+              <ComboBox Grid.Row="1" Grid.Column="1"
+                        HorizontalAlignment="Stretch"
+                        ItemsSource="{Binding RefreshRates}"
+                        SelectedItem="{Binding BatteryRefreshRate, Mode=TwoWay}" />
+            </Grid>
+
+            <TextBlock Classes="label" Margin="0,6,0,12" TextWrapping="Wrap"
+                       Text="Applied on a power source change, like the profile switch. A rate the panel does not advertise is skipped rather than forced." />
 
             <CheckBox IsChecked="{Binding OverdriveEnabled, Mode=OneWay}"
                       IsEnabled="{Binding OverdriveSupported}"

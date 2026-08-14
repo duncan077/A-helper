@@ -23,6 +23,22 @@ public sealed class AppSettings
     public bool MinimiseToTray { get; set; } = true;
 
     /// <summary>
+    /// Switch refresh rate with the power source, alongside the thermal profile.
+    /// </summary>
+    /// <remarks>
+    /// Separate from <see cref="AutoSwitchEnabled"/> because the two are useful
+    /// independently: dropping to 60 Hz on battery is worthwhile even without
+    /// profile switching, and vice versa.
+    /// </remarks>
+    public bool AutoRefreshRateEnabled { get; set; }
+
+    /// <summary>Refresh rate applied on AC, or 0 to leave it alone.</summary>
+    public int AcRefreshRate { get; set; }
+
+    /// <summary>Refresh rate applied on battery, or 0 to leave it alone.</summary>
+    public int BatteryRefreshRate { get; set; }
+
+    /// <summary>
     /// Which APGeEvent triggers profile cycling.
     ///
     /// Defaults to the documented gaming/Turbo event (function 0x07), but
@@ -98,6 +114,12 @@ public sealed class AppSettings
                         settings.NitroKeyExtended = ext; break;
                     case "usbc_profile" when Enum.TryParse<ThermalProfile>(value, true, out var up):
                         settings.UsbcProfile = up; break;
+                    case nameof(AutoRefreshRateEnabled) when bool.TryParse(value, out var ar):
+                        settings.AutoRefreshRateEnabled = ar; break;
+                    case nameof(AcRefreshRate) when TryParseUInt(value, out var acHz):
+                        settings.AcRefreshRate = (int)acHz; break;
+                    case nameof(BatteryRefreshRate) when TryParseUInt(value, out var batHz):
+                        settings.BatteryRefreshRate = (int)batHz; break;
 
                     // Anything else may be a per-profile key (scheme_*, boost_*, ...).
                     default:
@@ -141,6 +163,11 @@ public sealed class AppSettings
                 string.Create(CultureInfo.InvariantCulture, $"{nameof(AcProfile)}={AcProfile}"),
                 string.Create(CultureInfo.InvariantCulture, $"{nameof(BatteryProfile)}={BatteryProfile}"),
                 string.Create(CultureInfo.InvariantCulture, $"{nameof(MinimiseToTray)}={MinimiseToTray}"),
+                "",
+                "# Refresh rate follows the power source. 0 leaves it unchanged.",
+                string.Create(CultureInfo.InvariantCulture, $"{nameof(AutoRefreshRateEnabled)}={AutoRefreshRateEnabled}"),
+                string.Create(CultureInfo.InvariantCulture, $"{nameof(AcRefreshRate)}={AcRefreshRate}"),
+                string.Create(CultureInfo.InvariantCulture, $"{nameof(BatteryRefreshRate)}={BatteryRefreshRate}"),
                 "",
                 "# APGeEvent that cycles thermal profiles. Learn it with:",
                 "#   AcerHelper.Probe.exe --learn-nitro",

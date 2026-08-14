@@ -59,6 +59,20 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private bool _disposed;
 
+    /// <summary>How often sensors are read and the fan curve re-evaluated.</summary>
+    private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// Heartbeat window sized against the poll interval. The heartbeat rides on
+    /// the poll, so the timeout has to tolerate a missed tick - at 5 s polling a
+    /// 10 s window would trip on a single slow read. The temperature ceiling is
+    /// the real safety net and is unaffected.
+    /// </summary>
+    private static readonly AcerFanGuardOptions GuardOptions = new()
+    {
+        HeartbeatTimeout = TimeSpan.FromSeconds(20),
+    };
+
     public MainViewModel()
     {
         SetProfileCommand = new RelayCommand(p => _ = SetProfileAsync((ThermalProfile)p!),
@@ -208,10 +222,59 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     }
 
     private bool _curveEnabled;
+
+    /// <summary>
+    /// Whether custom fan curves drive the fans. Also gates the editor, which is
+    /// hidden when off.
+    /// </summary>
+    /// <remarks>
+    /// Turning this off stops the curve running but keeps the saved points, so
+    /// re-enabling restores them. Discarding the configuration is what the Clear
+    /// button is for — an on/off switch that silently destroyed work would be a
+    /// nasty surprise.
+    /// </remarks>
     public bool CurveEnabled
     {
         get => _curveEnabled;
-        set { if (Set(ref _curveEnabled, value)) RaiseCanExecuteChanged(); }
+        set
+        {
+            if (!Set(ref _curveEnabled, value)) return;
+
+            RaiseCanExecuteChanged();
+
+            if (value) ApplyCurrentCurve();
+            else StopCurve();
+        }
+    }
+
+    /// <summary>Starts driving the fans from the editor's current points.</summary>
+    private void ApplyCurrentCurve()
+    {
+        _activeFanCurve = ToPoints(FanCurveRows);
+        _activeGpuCurve = ToPoints(GpuFanCurveRows);
+
+        // Force the next poll to reprogram even if the computed duty matches
+        // whatever was last sent.
+        _lastCurveDuty = -1;
+        _lastGpuCurveDuty = -1;
+
+        Status = $"Fan curve active for {CurveProfile}";
+    }
+
+    /// <summary>Stops the curve and hands the fans back to the EC.</summary>
+    private void StopCurve()
+    {
+        _activeFanCurve = null;
+        _activeGpuCurve = null;
+        _lastCurveDuty = -1;
+        _lastGpuCurveDuty = -1;
+
+        // Releasing the guard is what actually restores Auto; without it the
+        // fans would hold the last duty the curve programmed.
+        _ = _hw.InvokeAsync(() => { _fanGuard?.Dispose(); _fanGuard = null; });
+
+        CustomFanEnabled = false;
+        Status = "Fan curve off — fans returned to Auto";
     }
 
     public ICommand SaveFanCurveCommand { get; private set; } = null!;
@@ -374,6 +437,65 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private string _displayMode = "--";
     public string DisplayMode { get => _displayMode; private set => Set(ref _displayMode, value); }
+
+    /// <summary>
+    /// Whether the refresh rate follows the power source.
+    /// </summary>
+    /// <remarks>
+    /// Kept separate from profile auto-switching because the two are useful
+    /// independently - dropping to 60 Hz on battery is worthwhile even without
+    /// profile switching.
+    /// </remarks>
+    public bool AutoRefreshRateEnabled
+    {
+        get => _settings.AutoRefreshRateEnabled;
+        set
+        {
+            if (_settings.AutoRefreshRateEnabled == value) return;
+
+            _settings.AutoRefreshRateEnabled = value;
+            _settings.Save();
+            OnPropertyChanged();
+
+            // Apply at once so enabling it visibly does something rather than
+            // waiting for the next plug or unplug.
+            if (value) ApplyRefreshRateForPower(_lastPowerSource, "auto rate enabled");
+        }
+    }
+
+    /// <summary>Rate used on AC. 0 means leave the rate alone.</summary>
+    public int AcRefreshRate
+    {
+        get => _settings.AcRefreshRate;
+        set
+        {
+            if (_settings.AcRefreshRate == value) return;
+
+            _settings.AcRefreshRate = value;
+            _settings.Save();
+            OnPropertyChanged();
+
+            if (AutoRefreshRateEnabled && _lastPowerSource == PowerSource.AC)
+                ApplyRefreshRateForPower(PowerSource.AC, "AC rate changed");
+        }
+    }
+
+    /// <summary>Rate used on battery. 0 means leave the rate alone.</summary>
+    public int BatteryRefreshRate
+    {
+        get => _settings.BatteryRefreshRate;
+        set
+        {
+            if (_settings.BatteryRefreshRate == value) return;
+
+            _settings.BatteryRefreshRate = value;
+            _settings.Save();
+            OnPropertyChanged();
+
+            if (AutoRefreshRateEnabled && _lastPowerSource == PowerSource.Battery)
+                ApplyRefreshRateForPower(PowerSource.Battery, "battery rate changed");
+        }
+    }
 
     private bool _overdriveSupported;
     public bool OverdriveSupported
@@ -588,7 +710,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     private async Task PollLoopAsync(CancellationToken token)
     {
-        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+        // 5 s rather than 1 s: each tick is six WMI round trips, and neither
+        // temperature nor fan speed changes usefully faster than that. The fan
+        // curve is re-evaluated at the same cadence.
+        using var timer = new PeriodicTimer(PollInterval);
         var consecutiveErrors = 0;
 
         while (await timer.WaitForNextTickAsync(token).ConfigureAwait(false))
@@ -619,9 +744,16 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
                     // Do not act on the very first reading: applying a profile at
                     // startup would override whatever the user last chose.
-                    if (AutoSwitchEnabled && previous != PowerSource.Unknown)
-                        await ApplyProfileForPowerAsync(power, $"switched to {power}")
-                            .ConfigureAwait(false);
+                    if (previous != PowerSource.Unknown)
+                    {
+                        if (AutoSwitchEnabled)
+                            await ApplyProfileForPowerAsync(power, $"switched to {power}")
+                                .ConfigureAwait(false);
+
+                        if (AutoRefreshRateEnabled)
+                            await Dispatcher.UIThread.InvokeAsync(
+                                () => ApplyRefreshRateForPower(power, $"switched to {power}"));
+                    }
                 }
 
                 await Dispatcher.UIThread.InvokeAsync(() =>
@@ -1008,6 +1140,46 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
+    /// <summary>
+    /// Applies the rate configured for a power source. A rate of 0, or one the
+    /// panel does not advertise, is skipped rather than forced - the list comes
+    /// from the driver and can differ per docking or display configuration.
+    /// </summary>
+    private void ApplyRefreshRateForPower(PowerSource source, string reason)
+    {
+        var target = source switch
+        {
+            PowerSource.AC => AcRefreshRate,
+            PowerSource.Battery => BatteryRefreshRate,
+            _ => 0,
+        };
+
+        if (target <= 0) return;
+
+        if (RefreshRates.Count > 0 && !RefreshRates.Contains(target))
+        {
+            Diagnostics.Write($"auto rate skipped: {target} Hz not offered by the display");
+            Status = $"Auto refresh skipped - {target} Hz is not available";
+            return;
+        }
+
+        var error = DisplayControl.SetRefreshRate(target);
+        if (error is null)
+        {
+            // Keep the dropdown truthful without re-triggering the setter.
+            _selectedRefreshRate = target;
+            OnPropertyChanged(nameof(SelectedRefreshRate));
+
+            Status = $"Refresh rate {target} Hz ({reason})";
+            Diagnostics.Write($"auto rate -> {target} Hz ({reason})");
+        }
+        else
+        {
+            Status = error;
+            Diagnostics.Write($"auto rate {target} Hz failed: {error}");
+        }
+    }
+
     private void ApplyRefreshRate(int hz)
     {
         var error = DisplayControl.SetRefreshRate(hz);
@@ -1129,7 +1301,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             GpuFanCurveRows.Add(new FanCurveRow(band, stored.GpuDutyFor(band) ?? DefaultDutyFor(profile, band)));
         }
 
-        CurveEnabled = stored.FanCurve is { Count: > 0 } || stored.GpuFanCurve is { Count: > 0 };
+        // Assign the field: routing through the setter here would start or
+        // stop the fans merely because the editor changed which profile it shows.
+        _curveEnabled = stored.FanCurve is { Count: > 0 } || stored.GpuFanCurve is { Count: > 0 };
+        OnPropertyChanged(nameof(CurveEnabled));
+        RaiseCanExecuteChanged();
     }
 
     /// <summary>
@@ -1180,7 +1356,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         _settings.Profiles.SetFanCurve(CurveProfile, cpu, gpu);
         _settings.Save();
 
-        CurveEnabled = true;
+        _curveEnabled = true;
+        OnPropertyChanged(nameof(CurveEnabled));
 
         // Only takes effect immediately if it is the profile in use.
         if (CurveProfile == CurrentProfile)
@@ -1213,7 +1390,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         _settings.Profiles.ClearFanCurve(CurveProfile);
         _settings.Save();
 
-        CurveEnabled = false;
+        _curveEnabled = false;
+        OnPropertyChanged(nameof(CurveEnabled));
 
         if (CurveProfile == CurrentProfile)
         {
@@ -1262,7 +1440,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             await _hw.InvokeAsync(() =>
             {
-                _fanGuard ??= AcerFanGuard.Engage(_wmi!);
+                _fanGuard ??= AcerFanGuard.Engage(_wmi!, GuardOptions);
                 if (cpuDuty is { } c2) _fanGuard.SetDuty(FanId.Cpu, c2);
                 if (gpuDuty is { } g2) _fanGuard.SetDuty(FanId.Gpu, g2);
             });
@@ -1376,7 +1554,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
             await _hw.InvokeAsync(() =>
             {
-                var guard = AcerFanGuard.Engage(_wmi!);
+                var guard = AcerFanGuard.Engage(_wmi!, GuardOptions);
                 guard.SetDuty(FanId.Cpu, cpu);
                 guard.SetDuty(FanId.Gpu, gpu);
                 _fanGuard = guard;
